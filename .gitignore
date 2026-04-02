@@ -1,0 +1,100 @@
+# =============================================================================
+# OS Generated Files
+# =============================================================================
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+desktop.ini
+
+# =============================================================================
+# Editor and IDE
+# =============================================================================
+# JetBrains (IntelliJ, PyCharm, GoLand, etc.)
+.idea/
+
+# VS Code (uncomment to ignore all settings, or keep to share workspace config)
+# .vscode/
+
+# Vim
+*.swp
+*.swo
+*~
+
+# Emacs
+\#*\#
+.#*
+
+# =============================================================================
+# Security - NEVER commit these
+# =============================================================================
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+*.p12
+*.pfx
+credentials.json
+secrets.yaml
+secrets.yml
+
+# =============================================================================
+# Logs and Databases
+# =============================================================================
+*.log
+logs/
+*.sqlite
+*.sqlite3
+*.db
+
+# =============================================================================
+# Build Artifacts and Caches
+# =============================================================================
+dist/
+build/
+out/
+.cache/
+*.tmp
+*.temp
+exports/
+archiver.yaml
+job-and-task-archiver
+job-ids.json
+
+# =============================================================================
+# Test Coverage
+# =============================================================================
+coverage/
+htmlcov/
+.coverage
+*.cover
+coverage.out
+
+# =============================================================================
+# MAINTAINER: Add language-specific patterns below
+# =============================================================================
+# Examples:
+#
+# Python:
+#   __pycache__/
+#   *.py[cod]
+#   .venv/
+#   venv/
+#   .pytest_cache/
+#
+# Node.js:
+#   node_modules/
+#   npm-debug.log
+#   .npm/
+#
+# Go:
+#   vendor/
+#   *.exe
+#
+# Rust:
+#   target/
+#   Cargo.lock (for libraries only)
