@@ -1,228 +1,301 @@
 # job-and-task-archiver
 
-<!--
-MAINTAINER: Add badges for your project. Common badges include:
-- Build status (GitHub Actions)
-- Code coverage
-- License
-- Version/Release
-- Downloads
-
-Example badges (update URLs for your project):
-
-[![Build Status](https://github.com/itential/job-and-task-archiver/actions/workflows/ci.yml/badge.svg)](https://github.com/itential/job-and-task-archiver/actions/workflows/ci.yml)
-[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-[![GitHub release](https://img.shields.io/github/v/release/itential/job-and-task-archiver)](https://github.com/itential/job-and-task-archiver/releases)
--->
-
-[![License](https://img.shields.io/badge/License-GPL--3.0-blue.svg)](LICENSE)
-
-<!--
-MAINTAINER: Write a clear, concise description of what your project does.
-This should be 2-3 sentences that answer:
-- What problem does this solve?
-- Who is it for?
-- What makes it useful?
-
-Example:
-"A high-performance CLI tool for managing network device configurations.
-Designed for network engineers who need to automate bulk changes across
-multiple vendors with built-in validation and rollback support."
--->
-
-A brief description of what job-and-task-archiver does and why it exists.
+Exports and optionally deletes completed and canceled Itential Platform job documents — along with all associated tasks and job data — from a MongoDB database. Designed to run safely against production databases with minimal impact.
 
 ## Features
 
-<!--
-MAINTAINER: List 4-6 key features that highlight what makes your project valuable.
-Use action-oriented language and be specific about benefits.
+- **Domain-aware queries** — finds eligible parent jobs first, then expands to all child jobs, exactly matching the logic of the reference `delete-jobs` Node.js script
+- **Cascade delete** — removes documents from all five related collections: `jobs`, `tasks`, `job_data`, `job_data.files`, `job_data.chunks`
+- **Safe deletion order** — tasks and job data are deleted before jobs, so job IDs remain discoverable if the run is interrupted
+- **Idempotent** — re-running is always safe; discovery runs fresh every time and export files are overwritten
+- **Non-blocking** — reads default to `secondaryPreferred` to avoid loading the primary; configurable batch delays throttle write pressure
+- **TLS support** — custom CA, mutual TLS, and Atlas `mongodb+srv://` URIs
+- **Flexible config** — CLI flags, `ARCHIVER_*` environment variables, or a YAML config file
 
-Example:
-- **Fast execution** - Processes 1000+ devices in parallel
-- **Multi-vendor support** - Works with Cisco, Juniper, Arista, and more
-- **Safe by default** - Dry-run mode and automatic rollback on failures
-- **Extensible** - Plugin system for custom device types
--->
+## How it works
 
-- **Feature one** - Brief description of the feature
-- **Feature two** - Brief description of the feature
-- **Feature three** - Brief description of the feature
-- **Feature four** - Brief description of the feature
+### Document discovery (two-phase)
 
-## Requirements
+**Phase 1** — query the `jobs` collection for parent jobs that meet all three criteria:
+- `metrics.end_time` is older than the cutoff date (stored as milliseconds)
+- `status` is `complete` or `canceled`
+- `ancestors` array has exactly one element (the job itself — this identifies parent jobs)
 
-<!--
-MAINTAINER: List all prerequisites needed to use your project.
-Be specific about versions where it matters.
+**Phase 2** — expand to all related jobs (parents and children) by querying for any job whose first ancestor (`ancestors.0`) matches a parent ID from phase 1. This captures child jobs that may not individually meet the age or status criteria but belong to an eligible parent.
 
-Examples by tech stack:
-- Python: Python 3.10+, pip or uv
-- Node.js: Node.js 18+, npm 9+
-- Go: Go 1.21+
-- Rust: Rust 1.70+, cargo
--->
+The discovered IDs are saved to `job-ids.json` for post-run inspection, but are not read back on the next run — discovery always starts fresh.
 
-- Requirement 1 (e.g., Python 3.10+)
-- Requirement 2 (e.g., specific system dependency)
+### Cascade delete (safe order)
 
-## Installation
+Deletions happen in this order so that job IDs remain queryable until the very end — allowing safe resume if the process is interrupted:
 
-<!--
-MAINTAINER: Provide clear installation instructions for all supported methods.
-Order from simplest/most common to advanced. Include copy-pasteable commands.
+| Step | Collection | Filter |
+|---|---|---|
+| 1 | `tasks` | `job._id` in job IDs |
+| 2 | `job_data` | `job_id` in job IDs |
+| 3 | `job_data.chunks` | `files_id` in file document IDs |
+| 4 | `job_data.files` | `metadata.job` in job IDs |
+| 5 | `jobs` | `_id` in job IDs |
 
-Common patterns:
-- Package managers (pip, npm, brew, cargo)
-- Binary releases
-- Building from source
--->
+`job_data.chunks` requires a two-phase delete: `files_id` references the `_id` of the parent `job_data.files` document, not the job ID. File document IDs are resolved first, then chunks are deleted by those IDs.
 
-### Quick Install
+## Build
+
+Binaries are written to the `dist/` directory. The version string is set automatically from the current git tag.
 
 ```bash
-# Add your primary installation command here
-# Examples:
-# pip install job-and-task-archiver
-# npm install -g job-and-task-archiver
-# brew install itential/tap/job-and-task-archiver
-# go install github.com/itential/job-and-task-archiver@latest
+make all        # build for all platforms
+make mac        # darwin/amd64 and darwin/arm64
+make linux      # linux/amd64 and linux/arm64 (RHEL/Rocky compatible)
+make windows    # windows/amd64
+make install    # build for the current platform and install to /usr/local/bin
+make clean      # remove dist/
 ```
 
-### From Source
+`make install` detects the current OS and architecture automatically and copies the binary to `/usr/local/bin` by default. Override the destination with `INSTALL_DIR`:
 
 ```bash
-git clone https://github.com/itential/job-and-task-archiver.git
-cd job-and-task-archiver
-
-# Add build/install commands for your tech stack
-# Examples:
-# pip install -e .
-# npm install && npm run build
-# go build -o job-and-task-archiver .
-# cargo build --release
+sudo make install                             # installs to /usr/local/bin
+sudo make install INSTALL_DIR=/opt/archiver   # installs elsewhere
 ```
 
-## Quick Start
+`sudo` is required when installing to system directories.
 
-<!--
-MAINTAINER: Show the simplest possible usage that demonstrates value.
-This should be a "hello world" equivalent that works in under a minute.
-Include expected output where helpful.
--->
+| Target | Output file |
+|---|---|
+| `mac` | `dist/job-and-task-archiver-darwin-amd64` |
+| `mac` | `dist/job-and-task-archiver-darwin-arm64` |
+| `linux` | `dist/job-and-task-archiver-linux-amd64` |
+| `linux` | `dist/job-and-task-archiver-linux-arm64` |
+| `windows` | `dist/job-and-task-archiver-windows-amd64.exe` |
 
 ```bash
-# Show the most basic usage example
-job-and-task-archiver --help
+go mod tidy   # update dependencies
 ```
 
-<!--
-MAINTAINER: Add a real-world example that shows typical usage.
+## Testing
 
-Example:
+Unit tests cover the core logic and do not require a MongoDB connection.
+
 ```bash
-# Configure a device
-job-and-task-archiver configure --target router1.example.com --config network.yaml
-
-# Output:
-# ✓ Connected to router1.example.com
-# ✓ Configuration validated
-# ✓ Changes applied successfully
+make test                              # run all tests
+make coverage                          # run tests with coverage report
+go test ./... -v                       # verbose output
+go test ./... -run TestBatchDelete     # run a specific test
 ```
--->
 
 ## Usage
 
-<!--
-MAINTAINER: Provide comprehensive usage examples organized by use case.
-Include both simple and advanced examples. Show common workflows.
--->
-
-### Basic Usage
-
-```bash
-# Add basic usage examples
+```
+./job-and-task-archiver [flags]
 ```
 
-### Configuration
+## Flags
 
-<!--
-MAINTAINER: If your project uses configuration files, show the format
-and explain the key options. Include a minimal working example.
+| Flag | Env var | Default | Description |
+|---|---|---|---|
+| `--config` | `ARCHIVER_CONFIG` | _(none)_ | Path to YAML config file. Auto-discovers `./archiver.yaml` if present. |
+| `--uri` | `ARCHIVER_URI` | `mongodb://localhost:27017` | MongoDB connection URI. Use `mongodb+srv://` for Atlas. |
+| `--database` | `ARCHIVER_DATABASE` | _(required)_ | Database name. |
+| `--cutoff-days` | `ARCHIVER_CUTOFF_DAYS` | _(required)_ | Archive jobs completed or canceled before midnight UTC of the current day, minus this many days. |
+| `--ids-file` | `ARCHIVER_IDS_FILE` | `job-ids.json` | Path where discovered job IDs are written after each run (for inspection only). |
+| `--output-dir` | `ARCHIVER_OUTPUT_DIR` | `exports` | Directory where per-collection JSONL files are written. Created if it does not exist. |
+| `--batch-size` | `ARCHIVER_BATCH_SIZE` | `1000` | Documents per batch for both export and delete. |
+| `--batch-delay-ms` | `ARCHIVER_BATCH_DELAY_MS` | `100` | Milliseconds to sleep between batches. Increase to reduce database load. |
+| `--export` | `ARCHIVER_EXPORT` | `true` | Export job documents to the output directory. Use `--export=false` to skip (boolean flags require `=` syntax). |
+| `--delete` | `ARCHIVER_DELETE` | `false` | Delete documents after export. Deletion never runs unless this flag is explicitly set. Use `--delete=true` or just `--delete`. |
+| `--skip-count` | `ARCHIVER_SKIP_COUNT` | `false` | Skip the per-collection document count summary after discovery. Useful for large datasets where the count queries are slow. |
+| `--read-preference` | `ARCHIVER_READ_PREFERENCE` | `secondaryPreferred` | MongoDB read preference. Valid values: `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, `nearest`. |
+| `--tls-ca-file` | `ARCHIVER_TLS_CA_FILE` | _(none)_ | Path to a PEM file containing the CA certificate. Use for on-prem deployments with a custom CA. |
+| `--tls-cert-file` | `ARCHIVER_TLS_CERT_FILE` | _(none)_ | Path to a PEM file containing the client certificate (mutual TLS). Requires `--tls-key-file`. |
+| `--tls-key-file` | `ARCHIVER_TLS_KEY_FILE` | _(none)_ | Path to a PEM file containing the client private key (mutual TLS). Requires `--tls-cert-file`. |
+| `--tls-skip-verify` | `ARCHIVER_TLS_SKIP_VERIFY` | `false` | Disable TLS certificate verification. Insecure — avoid in production. |
 
-Example:
+> **Cutoff timing**: the cutoff is always pinned to midnight UTC of the current day, minus `--cutoff-days`. Running the tool at 9am or 11pm on the same day with the same `--cutoff-days` produces identical results. This makes scheduled and ad-hoc runs predictable and comparable.
+
+> **Boolean flag syntax**: boolean flags must use `=` when setting them to `false`. Use `--export=false`, not `--export false`. The latter is parsed as `--export` (true) with `false` as an unrecognized argument and silently ignored.
+
+## Config file
+
+Create `archiver.yaml` in the working directory (or pass `--config path/to/file.yaml`). YAML keys match the long flag names.
+
 ```yaml
-# config.yaml
-target: production
-devices:
-  - hostname: router1.example.com
-    type: cisco_ios
-options:
-  timeout: 30
-  retry: 3
+uri: "mongodb+srv://user:pass@cluster.mongodb.net/?retryWrites=true"
+database: mydb
+cutoff-days: 30
+output-dir: exports
+batch-size: 500
+batch-delay-ms: 250
+export: true
+delete: false
+read-preference: secondaryPreferred
 ```
--->
 
-### Advanced Examples
+Priority order: CLI flag > environment variable > config file > default.
 
-<!--
-MAINTAINER: Show more complex scenarios that power users might need.
-Include examples for:
-- Automation/scripting
-- Integration with other tools
-- Performance optimization
-- Edge cases
--->
+## Examples
+
+**Preview — count eligible jobs without exporting or deleting:**
+```bash
+./job-and-task-archiver \
+  --uri "$PROD_URI" \
+  --database mydb \
+  --cutoff-days 30 \
+  --export=false
+```
+
+This runs discovery and the document count summary, then exits without writing any files or deleting anything.
+
+## Archiving from production to another database
+
+The safest approach is a two-phase workflow: export first, verify the import, then delete.
+
+**Phase 1 — discover and export:**
+```bash
+./job-and-task-archiver \
+  --uri "$PROD_URI" \
+  --database mydb \
+  --cutoff-days 30
+```
+
+This writes one file per collection to the `exports/` directory:
+
+```
+exports/
+  jobs.jsonl
+  tasks.jsonl
+  job_data.jsonl
+  job_data.files.jsonl
+  job_data.chunks.jsonl
+```
+
+Only collections with matching documents produce a file.
+
+**Import the exported data into the archive database:**
+
+`mongoimport` accepts a single file per invocation and does not support importing a directory. Import each collection separately:
 
 ```bash
-# Add advanced usage examples
+for f in exports/*.jsonl; do
+  collection=$(basename "$f" .jsonl)
+  mongoimport \
+    --uri "$ARCHIVE_URI" \
+    --db archive \
+    --collection "$collection" \
+    --mode insert \
+    --file "$f"
+done
 ```
 
-## Documentation
+**Verify the import before proceeding:**
+```bash
+mongosh "$ARCHIVE_URI" --eval \
+  'db.getSiblingDB("archive").jobs.countDocuments()'
+```
 
-<!--
-MAINTAINER: Link to additional documentation resources.
-Remove sections that don't apply to your project.
--->
+**Phase 2 — delete from production:**
+```bash
+./job-and-task-archiver \
+  --uri "$PROD_URI" \
+  --database mydb \
+  --cutoff-days 30 \
+  --export=false \
+  --delete
+```
 
-- [Contributing Guide](CONTRIBUTING.md) - How to contribute to this project
-- [Code of Conduct](CODE_OF_CONDUCT.md) - Community guidelines
-- [Changelog](CHANGELOG.md) - Version history and release notes
+Discovery runs fresh, then deletes. If this run is interrupted, re-run the same command — the delete is idempotent.
 
-<!--
-MAINTAINER: Add links to additional docs if you have them:
-- [API Reference](docs/api.md)
-- [Configuration Guide](docs/configuration.md)
-- [Troubleshooting](docs/troubleshooting.md)
-- [Examples](examples/)
--->
+## Scheduling with cron
 
-## Contributing
+A cron job is a scheduled task that runs automatically at a defined interval on Unix-based systems. Without automated scheduling, database cleanup depends on someone remembering to run it manually — which means it doesn't happen consistently. Adding this tool to cron ensures job history is pruned on a regular cadence, preventing unbounded collection growth before it becomes a performance problem.
 
-Contributions are welcome! Please read our [Contributing Guide](CONTRIBUTING.md) to get started.
+The recommended pattern is to run the archiver nightly during off-peak hours. Edit the crontab with `crontab -e` and add:
 
-Before contributing, you'll need to sign our [Contributor License Agreement](CLA.md).
+```
+0 2 * * * /opt/archiver/job-and-task-archiver --config /etc/archiver.yaml >> /var/log/archiver.log 2>&1
+```
 
-## Support
+This runs the archiver at 2:00am every day, appending all output to a log file. Adjust the path to the binary and config file to match your environment.
 
-<!--
-MAINTAINER: Describe how users can get help. Options include:
-- GitHub Issues (for bugs)
-- GitHub Discussions (for questions)
-- Email support
-- Community chat (Slack, Discord)
--->
+To verify the job is registered:
 
-- **Bug Reports**: [Open an issue](https://github.com/itential/job-and-task-archiver/issues/new)
-- **Questions**: [Start a discussion](https://github.com/itential/job-and-task-archiver/discussions)
-- **Maintainer**: [@steven-schattenberg-itential](https://github.com/steven-schattenberg-itential)
+```bash
+crontab -l
+```
 
-## License
+To check that it ran and review its output:
 
-This project is licensed under the GNU General Public License v3.0 - see the [LICENSE](LICENSE) file for details.
+```bash
+tail -f /var/log/archiver.log
+```
 
----
+> **Note for RHEL/Rocky Linux users:** systemd timers are an alternative to cron that provide better logging via `journalctl` and resilience across reboots (`Persistent=true` will catch up a missed run after downtime). Either approach works — cron is simpler to set up, systemd timers are easier to operate at scale.
 
-<p align="center">
-  Made with ❤️ by the <a href="https://github.com/itential">Itential</a> community
-</p>
+## Example: export and import script
+
+The following script runs the archiver and then imports each exported collection into an archive database.
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+PROD_URI="mongodb://localhost:27017"
+ARCHIVE_URI="mongodb://archive-host:27017"
+DATABASE="itential"
+ARCHIVE_DB="itential_archive"
+CUTOFF_DAYS=30
+EXPORT_DIR="exports"
+
+# Export from production
+./job-and-task-archiver \
+  --uri "$PROD_URI" \
+  --database "$DATABASE" \
+  --cutoff-days "$CUTOFF_DAYS" \
+  --output-dir "$EXPORT_DIR"
+
+# Import each collection into the archive database
+for f in "$EXPORT_DIR"/*.jsonl; do
+  collection=$(basename "$f" .jsonl)
+  echo "Importing $collection..."
+  mongoimport \
+    --uri "$ARCHIVE_URI" \
+    --db "$ARCHIVE_DB" \
+    --collection "$collection" \
+    --mode upsert \
+    --file "$f"
+done
+
+# Compress the export directory into a dated archive
+tar -czf "${EXPORT_DIR}-$(date +%Y%m%d).tar.gz" "$EXPORT_DIR"
+
+echo "Done."
+```
+
+`set -euo pipefail` ensures the script exits immediately if the archiver or any `mongoimport` invocation fails, rather than silently continuing with a partial import.
+
+Since the export produces a directory of files rather than a single stream, `tar -czf` is the right compression approach — it bundles the directory and compresses it in one command. The result is a single dated archive (e.g. `exports-20260331.tar.gz`) that can be moved to long-term storage or deleted once retention requirements are met.
+
+To inspect or restore the archive later:
+
+```bash
+# List contents
+tar -tzf exports-20260331.tar.gz
+
+# Extract
+tar -xzf exports-20260331.tar.gz
+```
+
+## Output format
+
+Each JSONL file contains one document per line, exactly as it exists in MongoDB — no fields are added or modified:
+
+```
+{"_id":"507f1f77bcf86cd799439011","status":"complete","metrics":{"end_time":1704067200000},"ancestors":["507f1f77bcf86cd799439011"]}
+{"_id":"507f1f77bcf86cd799439012","status":"canceled","metrics":{"end_time":1704153600000},"ancestors":["507f1f77bcf86cd799439012"]}
+```
+
+JSONL (newline-delimited JSON) is well-suited for this use case:
+
+- **Streamable**: each line is a complete, self-contained document. Tools like `mongoimport`, `jq`, `grep`, and `awk` can process the file line by line without loading it all into memory.
+- **Recoverable**: a crash mid-write at most corrupts the line being written. All previous lines remain valid.
+- **Compatible**: `mongoimport` natively accepts JSONL as input.
