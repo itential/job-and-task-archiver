@@ -231,6 +231,8 @@ type IDCache struct {
 }
 
 
+// saveIDCache serializes cache to path as indented JSON, setting CreatedAt to
+// the current UTC time before writing. The file is created or overwritten.
 func saveIDCache(path string, cache *IDCache) error {
 	cache.CreatedAt = time.Now().UTC().Format(time.RFC3339)
 	data, err := json.MarshalIndent(cache, "", "  ")
@@ -244,6 +246,10 @@ func saveIDCache(path string, cache *IDCache) error {
 // MongoDB client construction
 // ----------------------------------------------------------------------------
 
+// buildMongoClient creates and connects a MongoDB client configured from cfg.
+// It applies the read preference, a 30-second server selection timeout, and
+// optional TLS settings. For Atlas mongodb+srv:// URIs, TLS is negotiated
+// automatically from the SRV record and no TLS flags are needed.
 func buildMongoClient(ctx context.Context, cfg *Config) (*mongo.Client, error) {
 	rp, err := parseReadPref(cfg.ReadPreference)
 	if err != nil {
@@ -269,6 +275,10 @@ func buildMongoClient(ctx context.Context, cfg *Config) (*mongo.Client, error) {
 	return mongo.Connect(ctx, opts)
 }
 
+// buildTLSConfig constructs a *tls.Config from the TLS-related fields in cfg.
+// It supports a custom CA certificate, mutual TLS via a cert/key pair, and
+// optional certificate verification skip. Only called when at least one TLS
+// flag is set; Atlas connections do not require it.
 func buildTLSConfig(cfg *Config) (*tls.Config, error) {
 	tlsCfg := &tls.Config{
 		InsecureSkipVerify: cfg.TLSSkipVerify, //nolint:gosec — intentional, user-controlled
@@ -300,6 +310,9 @@ func buildTLSConfig(cfg *Config) (*tls.Config, error) {
 	return tlsCfg, nil
 }
 
+// parseReadPref converts a case-insensitive mode string to a MongoDB
+// *readpref.ReadPref. An empty string defaults to primary. Returns an error
+// for any unrecognized value.
 func parseReadPref(mode string) (*readpref.ReadPref, error) {
 	switch strings.ToLower(mode) {
 	case "primary", "":
@@ -356,16 +369,29 @@ type DatabaseAPI interface {
 // mongoCollection wraps *mongo.Collection to satisfy CollectionAPI.
 type mongoCollection struct{ coll *mongo.Collection }
 
+// Name returns the name of the underlying MongoDB collection.
 func (c *mongoCollection) Name() string { return c.coll.Name() }
+
+// Find executes a find query against the collection and returns a cursor over
+// the matching documents.
 func (c *mongoCollection) Find(ctx context.Context, filter interface{}, opts ...*options.FindOptions) (CursorAPI, error) {
 	return c.coll.Find(ctx, filter, opts...)
 }
+
+// FindOne executes a find query and returns a single result for the first
+// matching document.
 func (c *mongoCollection) FindOne(ctx context.Context, filter interface{}) SingleResultAPI {
 	return c.coll.FindOne(ctx, filter)
 }
+
+// DeleteMany deletes all documents matching filter from the collection and
+// returns the count of deleted documents.
 func (c *mongoCollection) DeleteMany(ctx context.Context, filter interface{}) (*mongo.DeleteResult, error) {
 	return c.coll.DeleteMany(ctx, filter)
 }
+
+// CountDocuments returns the number of documents in the collection that match
+// filter.
 func (c *mongoCollection) CountDocuments(ctx context.Context, filter interface{}) (int64, error) {
 	return c.coll.CountDocuments(ctx, filter)
 }
@@ -373,6 +399,7 @@ func (c *mongoCollection) CountDocuments(ctx context.Context, filter interface{}
 // mongoDatabase wraps *mongo.Database to satisfy DatabaseAPI.
 type mongoDatabase struct{ db *mongo.Database }
 
+// Collection returns a CollectionAPI wrapping the named MongoDB collection.
 func (d *mongoDatabase) Collection(name string) CollectionAPI {
 	return &mongoCollection{coll: d.db.Collection(name)}
 }
@@ -958,6 +985,10 @@ func summarizeAffectedDocuments(ctx context.Context, db DatabaseAPI, ids []inter
 // Main
 // ----------------------------------------------------------------------------
 
+// main is the entry point for job-and-task-archiver. It loads configuration,
+// connects to MongoDB, runs two-phase job ID discovery, and then optionally
+// exports matching documents to per-collection JSONL files and deletes them
+// from the database.
 func main() {
 	start := time.Now()
 
