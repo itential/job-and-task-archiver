@@ -60,6 +60,10 @@ out/
 .cache/
 *.tmp
 *.temp
+exports/
+archiver.yaml
+job-and-task-archiver
+job-ids.json
 
 # =============================================================================
 # Test Coverage
@@ -68,6 +72,7 @@ coverage/
 htmlcov/
 .coverage
 *.cover
+coverage.out
 
 # =============================================================================
 # MAINTAINER: Add language-specific patterns below

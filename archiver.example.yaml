@@ -1,0 +1,55 @@
+# job-and-task-archiver configuration
+# Copy this file to archiver.yaml and update the values for your environment.
+# CLI flags and ARCHIVER_* environment variables override values set here.
+
+# MongoDB connection URI. Use mongodb+srv:// for Atlas; plain mongodb:// for on-prem.
+uri: "mongodb://localhost:27017"
+
+# Database name containing the Itential Platform job/task collections.
+database: "itential"
+
+# Delete jobs completed or canceled more than this many days ago.
+cutoff-days: 30
+
+# Path to the job IDs cache file. Both the export and delete phases load from
+# this file so they always operate on the exact same set of documents.
+# Delete this file to force re-discovery on the next run.
+ids-file: "job-ids.json"
+
+# Output file for exported job documents (newline-delimited JSON).
+# Use "-" to stream to stdout. To skip export entirely, set export: false.
+output: "export.jsonl"
+
+# Checkpoint file for resuming interrupted export runs.
+checkpoint: "checkpoint.json"
+
+# Number of documents processed per batch (export and delete).
+# Lower this value to reduce instantaneous load on the database.
+batch-size: 500
+
+# Milliseconds to sleep between batches. Increase to further reduce database load.
+batch-delay-ms: 250
+
+# Export job documents to the output file. Set to false to skip the export phase.
+export: true
+
+# Delete documents after export. Deletion never runs unless this is explicitly set to true.
+# Set to true only after verifying the export is complete and correct.
+delete: false
+
+# Skip the per-collection document count summary after discovery.
+# Useful for large datasets where the count queries are slow.
+skip-count: false
+
+# MongoDB read preference. secondaryPreferred routes reads away from the primary,
+# reducing impact on production traffic.
+# Options: primary, primaryPreferred, secondary, secondaryPreferred, nearest
+read-preference: "secondaryPreferred"
+
+# TLS configuration — only needed for on-prem deployments with custom CAs or
+# mutual TLS. Atlas mongodb+srv:// URIs handle TLS automatically; leave these
+# fields empty when using Atlas.
+tls-ca-file: ""
+tls-cert-file: ""
+tls-key-file: ""
+tls-skip-verify: false
