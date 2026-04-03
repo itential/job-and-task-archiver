@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+#
+# pre-commit hook — validates the current branch name against the project's
+# naming convention before git creates a commit.
+#
+# Branch name format : <type>/<description>
+# Valid types        : feature, fix, refactor, docs, chore
+# Description rules  : lowercase letters, numbers, and hyphens only
+# Example            : feature/add-export-flag
+#
+# Exit non-zero to abort the commit.
+
+set -euo pipefail
+
+# Read the current branch name. Produces an empty string in detached HEAD state.
+branch=$(git symbolic-ref --short HEAD 2>/dev/null || echo "")
+
+# Detached HEAD (e.g. during a rebase or bisect) — nothing to validate.
+if [[ -z "$branch" ]]; then
+    exit 0
+fi
+
+# Allow direct commits to main; branch protection on GitHub enforces the PR
+# workflow for merges into main.
+if [[ "$branch" == "main" ]]; then
+    exit 0
+fi
+
+pattern="^(feature|fix|refactor|docs|chore)/[a-z][a-z0-9-]*$"
+
+if [[ ! "$branch" =~ $pattern ]]; then
+    echo "error: branch '$branch' does not follow naming conventions." >&2
+    echo "" >&2
+    echo "  required format : <type>/<description>" >&2
+    echo "  valid types     : feature, fix, refactor, docs, chore" >&2
+    echo "  description     : lowercase letters, numbers, and hyphens only" >&2
+    echo "  example         : feature/add-export-flag" >&2
+    echo "" >&2
+    echo "  rename your branch before committing:" >&2
+    echo "    git branch -m <new-name>" >&2
+    exit 1
+fi
+
+echo "pre-commit: branch name ok"

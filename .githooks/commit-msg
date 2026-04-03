@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+#
+# commit-msg hook — validates the commit subject line against Conventional
+# Commits format before git finalizes the commit.
+#
+# Git passes the path to a temporary file containing the full commit message
+# as the first argument ($1). Only the subject line (first line) is validated.
+#
+# Subject format : <type>[(scope)]: <description>
+# Valid types    : feat, fix, docs, style, refactor, test, chore, perf
+# Max length     : 72 characters
+# Example        : feat(export): add --output-dir flag
+#
+# Merge commits are rejected — use squash or rebase instead.
+#
+# Exit non-zero to abort the commit.
+
+set -euo pipefail
+
+msg_file="$1"
+
+# Extract the subject line (first non-empty line of the commit message).
+subject=$(grep -m1 "." "$msg_file" || true)
+
+# Reject merge commits — the PR compliance workflow enforces squash/rebase.
+if [[ "$subject" =~ ^Merge ]]; then
+    echo "error: merge commits are not allowed." >&2
+    echo "  use squash or rebase instead of merging." >&2
+    exit 1
+fi
+
+# Subject must conform to Conventional Commits with a max length of 72 chars.
+pattern="^(feat|fix|docs|style|refactor|test|chore|perf)(\(.+\))?: .{1,72}$"
+
+if [[ ! "$subject" =~ $pattern ]]; then
+    echo "error: commit subject does not follow conventional commits format." >&2
+    echo "" >&2
+    echo "  expected : <type>[(scope)]: <description>  (72 char max)" >&2
+    echo "  types    : feat  fix  docs  style  refactor  test  chore  perf" >&2
+    echo "  example  : feat(export): add --output-dir flag" >&2
+    echo "" >&2
+    echo "  your subject: $subject" >&2
+    exit 1
+fi
+
+echo "commit-msg: ok"
