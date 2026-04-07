@@ -225,6 +225,10 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 - **`O_TRUNC` on export files**: intentional. Changing to `O_APPEND` reintroduces duplicate records on re-run.
 - **MongoDB interface signatures**: `CollectionAPI.DeleteMany` and `CountDocuments` intentionally omit variadic options — they only expose what the application actually uses. Expanding them requires updating both the interface and all mock implementations in tests.
 
+## Project Rules
+
+- **GitHub Actions and git hooks must stay in sync**: the checks enforced by `.github/workflows/pr-compliance.yml` (branch naming, commit message format) are mirrored locally by `githooks/pre-commit` and `githooks/commit-msg`. Any change to the rules in the workflow must be accompanied by the equivalent change in the corresponding hook, and vice versa. Never update one without updating the other.
+
 ## Deferred Work
 
 - **Parallel export and delete**: both phases can be parallelized using `golang.org/x/sync/errgroup`. Export: all five collections are independent, all filter IDs are pre-resolved before `runExport` is called. Delete: `tasks`, `job_data`, and `deleteGridFS` are independent and can run concurrently; `jobs` must still be last. Estimated ~3-5x speedup on large datasets. Side effect: increased MongoDB read/write pressure proportional to the number of goroutines; `--batch-delay-ms` applies per goroutine.

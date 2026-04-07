@@ -6,7 +6,7 @@ INSTALL_DIR ?= /usr/local/bin
 GOOS        ?= $(shell go env GOOS)
 GOARCH      ?= $(shell go env GOARCH)
 
-.PHONY: all mac linux windows clean test coverage install
+.PHONY: all mac linux windows clean test coverage install hooks
 
 all: mac linux windows
 
@@ -41,6 +41,15 @@ install: | $(OUTDIR)
 	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "$(LDFLAGS)" -o $(OUTDIR)/$(BINARY) .
 	install -m 0755 $(OUTDIR)/$(BINARY) $(INSTALL_DIR)/$(BINARY)
 	@echo "Installed $(INSTALL_DIR)/$(BINARY)"
+
+## hooks — install git hooks from githooks/ into .git/hooks
+hooks:
+	@for hook in githooks/*; do \
+		name=$$(basename $$hook); \
+		cp $$hook .git/hooks/$$name; \
+		chmod +x .git/hooks/$$name; \
+		echo "Installed .git/hooks/$$name"; \
+	done
 
 clean:
 	rm -rf $(OUTDIR)
