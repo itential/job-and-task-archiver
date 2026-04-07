@@ -1,13 +1,8 @@
-BINARY      := job-and-task-archiver
+BINARY      := itential-job-archiver
 VERSION     ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo "dev")
 LDFLAGS     := -s -w -X main.version=$(VERSION)
 OUTDIR      := dist
-INSTALL_DIR ?= /usr/local/bin
-GOOS        ?= $(shell go env GOOS)
-GOARCH      ?= $(shell go env GOARCH)
-
-.PHONY: all mac linux windows clean test coverage install hooks
-
+.PHONY: all mac linux windows clean test coverage hooks
 all: mac linux windows
 
 ## test — run unit tests
@@ -36,11 +31,6 @@ windows: | $(OUTDIR)
 $(OUTDIR):
 	mkdir -p $(OUTDIR)
 
-## install — build for the current platform and install to INSTALL_DIR (default: /usr/local/bin)
-install: | $(OUTDIR)
-	GOOS=$(GOOS) GOARCH=$(GOARCH) go build -ldflags "$(LDFLAGS)" -o $(OUTDIR)/$(BINARY) .
-	install -m 0755 $(OUTDIR)/$(BINARY) $(INSTALL_DIR)/$(BINARY)
-	@echo "Installed $(INSTALL_DIR)/$(BINARY)"
 
 ## hooks — install git hooks from githooks/ into .git/hooks
 hooks:

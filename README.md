@@ -48,30 +48,32 @@ make all        # build for all platforms
 make mac        # darwin/amd64 and darwin/arm64
 make linux      # linux/amd64 and linux/arm64 (RHEL/Rocky compatible)
 make windows    # windows/amd64
-make install    # build for the current platform and install to /usr/local/bin
 make clean      # remove dist/
 ```
 
-`make install` detects the current OS and architecture automatically and copies the binary to `/usr/local/bin` by default. Override the destination with `INSTALL_DIR`:
-
-```bash
-sudo make install                             # installs to /usr/local/bin
-sudo make install INSTALL_DIR=/opt/archiver   # installs elsewhere
-```
-
-`sudo` is required when installing to system directories.
-
 | Target | Output file |
 |---|---|
-| `mac` | `dist/job-and-task-archiver-darwin-amd64` |
-| `mac` | `dist/job-and-task-archiver-darwin-arm64` |
-| `linux` | `dist/job-and-task-archiver-linux-amd64` |
-| `linux` | `dist/job-and-task-archiver-linux-arm64` |
-| `windows` | `dist/job-and-task-archiver-windows-amd64.exe` |
+| `mac` | `dist/itential-job-archiver-darwin-amd64` |
+| `mac` | `dist/itential-job-archiver-darwin-arm64` |
+| `linux` | `dist/itential-job-archiver-linux-amd64` |
+| `linux` | `dist/itential-job-archiver-linux-arm64` |
+| `windows` | `dist/itential-job-archiver-windows-amd64.exe` |
 
 ```bash
 go mod tidy   # update dependencies
 ```
+
+## Install
+
+Download the appropriate archive for your platform from the [releases page](../../releases), then install the binary and create a short symlink:
+
+```bash
+tar -xzf itential-job-archiver-linux-amd64.tar.gz
+sudo cp itential-job-archiver-linux-amd64 /usr/local/bin/
+sudo ln -s /usr/local/bin/itential-job-archiver-linux-amd64 /usr/local/bin/itential-job-archiver
+```
+
+The symlink lets you invoke the tool as `itential-job-archiver` regardless of platform or architecture.
 
 ## Testing
 
@@ -87,7 +89,7 @@ go test ./... -run TestBatchDelete     # run a specific test
 ## Usage
 
 ```
-./job-and-task-archiver [flags]
+./itential-job-archiver [flags]
 ```
 
 ## Flags
@@ -139,7 +141,7 @@ Priority order: CLI flag > environment variable > config file > default.
 
 **Preview — count eligible jobs without exporting or deleting:**
 ```bash
-./job-and-task-archiver \
+./itential-job-archiver \
   --uri "$PROD_URI" \
   --database mydb \
   --cutoff-days 30 \
@@ -156,7 +158,7 @@ The safest approach is a two-phase workflow: export first, verify the import, th
 ```bash
 EXPORT_DIR="exports/$(date +%Y-%m-%d)"
 
-./job-and-task-archiver \
+./itential-job-archiver \
   --uri "$PROD_URI" \
   --database mydb \
   --cutoff-days 30 \
@@ -201,7 +203,7 @@ mongosh "$ARCHIVE_URI" --eval \
 
 **Phase 2 — delete from production:**
 ```bash
-./job-and-task-archiver \
+./itential-job-archiver \
   --uri "$PROD_URI" \
   --database mydb \
   --cutoff-days 30 \
@@ -224,7 +226,7 @@ set -euo pipefail
 
 EXPORT_DIR="/var/archives/$(date +%Y-%m-%d)"
 
-/opt/archiver/job-and-task-archiver \
+itential-job-archiver \
   --config /etc/archiver.yaml \
   --output-dir "$EXPORT_DIR"
 
@@ -279,7 +281,7 @@ CUTOFF_DAYS=30
 EXPORT_DIR="exports/$(date +%Y-%m-%d)"
 
 # Export from production into a dated directory
-./job-and-task-archiver \
+./itential-job-archiver \
   --uri "$PROD_URI" \
   --database "$DATABASE" \
   --cutoff-days "$CUTOFF_DAYS" \
