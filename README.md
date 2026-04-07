@@ -7,7 +7,7 @@ Exports and optionally deletes completed and canceled Itential Platform job docu
 - **Domain-aware queries** — finds eligible parent jobs first, then expands to all child jobs, exactly matching the logic of the reference `delete-jobs` Node.js script
 - **Cascade delete** — removes documents from all five related collections: `jobs`, `tasks`, `job_data`, `job_data.files`, `job_data.chunks`
 - **Safe deletion order** — tasks and job data are deleted before jobs, so job IDs remain discoverable if the run is interrupted
-- **Idempotent** — re-running is always safe; discovery runs fresh every time and export files are overwritten
+- **Idempotent** — re-running is always safe; discovery runs fresh every time, and exporting to a dated output directory preserves each run independently
 - **Non-blocking** — reads default to `secondaryPreferred` to avoid loading the primary; configurable batch delays throttle write pressure
 - **TLS support** — custom CA, mutual TLS, and Atlas `mongodb+srv://` URIs
 - **Flexible config** — CLI flags, `ARCHIVER_*` environment variables, or a YAML config file
@@ -95,7 +95,7 @@ go test ./... -run TestBatchDelete     # run a specific test
 | Flag | Env var | Default | Description |
 |---|---|---|---|
 | `--config` | `ARCHIVER_CONFIG` | _(none)_ | Path to YAML config file. Auto-discovers `./archiver.yaml` if present. |
-| `--uri` | `ARCHIVER_URI` | `mongodb://localhost:27017` | MongoDB connection URI. Use `mongodb+srv://` for Atlas. |
+| `--uri` | `ARCHIVER_URI` | `mongodb://localhost:27017` | MongoDB connection URI. Use `mongodb+srv://` for Atlas. **Always quote on the command line** — replica set and Atlas URIs contain `?` and `&` characters that the shell interprets as special syntax if unquoted. |
 | `--database` | `ARCHIVER_DATABASE` | _(required)_ | Database name. |
 | `--cutoff-days` | `ARCHIVER_CUTOFF_DAYS` | _(required)_ | Archive jobs completed or canceled before midnight UTC of the current day, minus this many days. |
 | `--ids-file` | `ARCHIVER_IDS_FILE` | `job-ids.json` | Path where discovered job IDs are written after each run (for inspection only). |
@@ -110,6 +110,8 @@ go test ./... -run TestBatchDelete     # run a specific test
 | `--tls-cert-file` | `ARCHIVER_TLS_CERT_FILE` | _(none)_ | Path to a PEM file containing the client certificate (mutual TLS). Requires `--tls-key-file`. |
 | `--tls-key-file` | `ARCHIVER_TLS_KEY_FILE` | _(none)_ | Path to a PEM file containing the client private key (mutual TLS). Requires `--tls-cert-file`. |
 | `--tls-skip-verify` | `ARCHIVER_TLS_SKIP_VERIFY` | `false` | Disable TLS certificate verification. Insecure — avoid in production. |
+
+> **URI quoting**: always wrap the URI in single or double quotes on the command line. Replica set and Atlas URIs contain `?` and `&` which the shell treats as special characters when unquoted. `--uri "mongodb+srv://user:pass@cluster/?retryWrites=true&authSource=admin"` is correct; omitting the quotes silently truncates the URI at the `?` or backgrounds the process at `&`.
 
 > **Cutoff timing**: the cutoff is always pinned to midnight UTC of the current day, minus `--cutoff-days`. Running the tool at 9am or 11pm on the same day with the same `--cutoff-days` produces identical results. This makes scheduled and ad-hoc runs predictable and comparable.
 
@@ -152,31 +154,35 @@ The safest approach is a two-phase workflow: export first, verify the import, th
 
 **Phase 1 — discover and export:**
 ```bash
+EXPORT_DIR="exports/$(date +%Y-%m-%d)"
+
 ./job-and-task-archiver \
   --uri "$PROD_URI" \
   --database mydb \
-  --cutoff-days 30
+  --cutoff-days 30 \
+  --output-dir "$EXPORT_DIR"
 ```
 
-This writes one file per collection to the `exports/` directory:
+This writes one file per collection to a dated subdirectory:
 
 ```
 exports/
-  jobs.jsonl
-  tasks.jsonl
-  job_data.jsonl
-  job_data.files.jsonl
-  job_data.chunks.jsonl
+  2026-04-03/
+    jobs.jsonl
+    tasks.jsonl
+    job_data.jsonl
+    job_data.files.jsonl
+    job_data.chunks.jsonl
 ```
 
-Only collections with matching documents produce a file.
+Using a dated directory means each run's exports are preserved independently. If the import or a follow-on copy step fails, the data is still there — re-running on the same day writes to the same dated directory. Only collections with matching documents produce a file.
 
 **Import the exported data into the archive database:**
 
 `mongoimport` accepts a single file per invocation and does not support importing a directory. Import each collection separately:
 
 ```bash
-for f in exports/*.jsonl; do
+for f in "$EXPORT_DIR"/*.jsonl; do
   collection=$(basename "$f" .jsonl)
   mongoimport \
     --uri "$ARCHIVE_URI" \
@@ -209,13 +215,39 @@ Discovery runs fresh, then deletes. If this run is interrupted, re-run the same 
 
 A cron job is a scheduled task that runs automatically at a defined interval on Unix-based systems. Without automated scheduling, database cleanup depends on someone remembering to run it manually — which means it doesn't happen consistently. Adding this tool to cron ensures job history is pruned on a regular cadence, preventing unbounded collection growth before it becomes a performance problem.
 
-The recommended pattern is to run the archiver nightly during off-peak hours. Edit the crontab with `crontab -e` and add:
+The recommended pattern is to run the archiver nightly during off-peak hours via a wrapper script. Using a wrapper avoids the `%` escaping required in crontab and makes the dated output directory straightforward to set:
+
+```bash
+#!/usr/bin/env bash
+# /opt/archiver/run-archiver.sh
+set -euo pipefail
+
+EXPORT_DIR="/var/archives/$(date +%Y-%m-%d)"
+
+/opt/archiver/job-and-task-archiver \
+  --config /etc/archiver.yaml \
+  --output-dir "$EXPORT_DIR"
+
+# Remove export directories older than 30 days
+find /var/archives -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
+```
+
+Edit the crontab with `crontab -e` and call the wrapper:
 
 ```
-0 2 * * * /opt/archiver/job-and-task-archiver --config /etc/archiver.yaml >> /var/log/archiver.log 2>&1
+0 2 * * * /opt/archiver/run-archiver.sh >> /var/log/archiver.log 2>&1
 ```
 
-This runs the archiver at 2:00am every day, appending all output to a log file. Adjust the path to the binary and config file to match your environment.
+This runs at 2:00am every day and writes exports to a dated subdirectory:
+
+```
+/var/archives/
+  2026-04-01/
+  2026-04-02/
+  2026-04-03/
+```
+
+Each run's exports are preserved independently, so a failed copy or upload does not risk losing the previous night's data. The cleanup at the end of the wrapper removes directories older than 30 days — adjust to match your retention policy. Adjust all paths to match your environment.
 
 To verify the job is registered:
 
@@ -239,14 +271,14 @@ The following script runs the archiver and then imports each exported collection
 #!/usr/bin/env bash
 set -euo pipefail
 
-PROD_URI="mongodb://localhost:27017"
+PROD_URI="mongodb://host1:27017,host2:27017,host3:27017/?replicaSet=rs0&readPreference=secondaryPreferred"
 ARCHIVE_URI="mongodb://archive-host:27017"
 DATABASE="itential"
 ARCHIVE_DB="itential_archive"
 CUTOFF_DAYS=30
-EXPORT_DIR="exports"
+EXPORT_DIR="exports/$(date +%Y-%m-%d)"
 
-# Export from production
+# Export from production into a dated directory
 ./job-and-task-archiver \
   --uri "$PROD_URI" \
   --database "$DATABASE" \
@@ -265,24 +297,28 @@ for f in "$EXPORT_DIR"/*.jsonl; do
     --file "$f"
 done
 
-# Compress the export directory into a dated archive
-tar -czf "${EXPORT_DIR}-$(date +%Y%m%d).tar.gz" "$EXPORT_DIR"
+# Compress the dated export directory and remove the uncompressed copy
+tar -czf "${EXPORT_DIR}.tar.gz" "$EXPORT_DIR"
+rm -rf "$EXPORT_DIR"
 
-echo "Done."
+# Remove compressed archives older than 30 days
+find exports -maxdepth 1 -name "*.tar.gz" -mtime +30 -delete
+
+echo "Done. Archive: ${EXPORT_DIR}.tar.gz"
 ```
 
-`set -euo pipefail` ensures the script exits immediately if the archiver or any `mongoimport` invocation fails, rather than silently continuing with a partial import.
+`set -euo pipefail` ensures the script exits immediately if the archiver or any `mongoimport` invocation fails, rather than silently continuing with a partial import. Because the export directory is dated, a failure at any step leaves the previous run's data intact.
 
-Since the export produces a directory of files rather than a single stream, `tar -czf` is the right compression approach — it bundles the directory and compresses it in one command. The result is a single dated archive (e.g. `exports-20260331.tar.gz`) that can be moved to long-term storage or deleted once retention requirements are met.
+The `tar` step compresses the directory and removes the uncompressed copy. The result (e.g. `exports/2026-04-03.tar.gz`) is a self-contained archive for that run. The final `find` removes compressed archives older than 30 days — adjust to match your retention policy.
 
-To inspect or restore the archive later:
+To inspect or restore an archive later:
 
 ```bash
 # List contents
-tar -tzf exports-20260331.tar.gz
+tar -tzf exports/2026-04-03.tar.gz
 
 # Extract
-tar -xzf exports-20260331.tar.gz
+tar -xzf exports/2026-04-03.tar.gz
 ```
 
 ## Output format
