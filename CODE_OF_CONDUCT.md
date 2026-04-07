@@ -2,7 +2,8 @@
 
 ## Purpose
 
-This Code of Conduct sets expectations for behavior in our open source community. It ensures a respectful, safe, and inclusive environment for contributors, maintainers, users, and newcomers—regardless of background, skill level, or personal identity.
+This Code of Conduct sets expectations for behavior in our open source community. It ensures a respectful, safe, and inclusive
+environment for contributors, maintainers, users, and newcomers—regardless of background, skill level, or personal identity.
 
 Open source thrives when everyone can contribute without harassment, discrimination, or toxicity. If you're here to collaborate, you're expected to follow this.
 
@@ -38,7 +39,7 @@ Violations will be handled promptly and decisively:
 
 If you experience or witness a violation, **speak up**:
 
-- Email: opensource@itential.com
+- Email: <opensource@itential.com>
 - Or DM a maintainer in private on our official chat
 
 All reports are confidential. Retaliation against reporters **will not be tolerated**.
@@ -53,4 +54,5 @@ This Code of Conduct applies in all project spaces, including:
 
 ## Attribution
 
-This code is based on the [Contributor Covenant](https://www.contributor-covenant.org), with pragmatic additions tailored for modern open source development.
+This code is based on the [Contributor Covenant](https://www.contributor-covenant.org), with pragmatic additions tailored for
+modern open source development.
