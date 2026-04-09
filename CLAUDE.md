@@ -2,7 +2,9 @@
 
 ## What This Tool Does
 
-`job-and-task-archiver` is a Go CLI that safely exports and optionally deletes completed and canceled Itential Platform job documents — along with all associated tasks and job data — from a MongoDB database. It is designed to run against **production databases** with minimal impact.
+`job-and-task-archiver` is a Go CLI that safely exports and optionally deletes completed and canceled Itential Platform
+job documents — along with all associated tasks and job data — from a MongoDB database. It is designed to run against
+**production databases** with minimal impact.
 
 ## Core Design Goals
 
@@ -26,14 +28,16 @@ Phases 2 and 3 are independently optional. Phase 1 always runs.
 
 - **Phase 1 crash**: re-run; discovery repeats from scratch with no side effects
 - **Phase 2 crash**: re-run; export files are truncated and rewritten from scratch (`O_TRUNC`)
-- **Phase 3 crash**: re-run; remaining job IDs are still in the `jobs` collection; discovery finds them and deletion continues. No orphan risk — tasks and job_data are deleted before jobs, so by the time `jobs` is being deleted, everything else is already gone.
+- **Phase 3 crash**: re-run; remaining job IDs are still in the `jobs` collection; discovery finds them and deletion
+  continues. No orphan risk — tasks and job_data are deleted before jobs, so by the time `jobs` is being deleted,
+  everything else is already gone.
 
 ## Collections Operated On
 
 Five collections, in safe deletion order (jobs last):
 
 | Collection | Filter used for deletion |
-|---|---|
+| --- | --- |
 | `tasks` | `job._id` in job IDs |
 | `job_data` | `job_id` in job IDs |
 | `job_data.chunks` | `files_id` in **file document IDs** (two-phase — see below) |
@@ -49,6 +53,7 @@ Five collections, in safe deletion order (jobs last):
 This is implemented in `deleteGridFS()` and `findFileIDs()`. The count summary uses the same two-phase approach.
 
 **Field types confirmed from a production deployment**:
+
 - `jobs._id` — BSON string (hex, e.g. `"17ea0fe657ac4da1b5fec4b1"`)
 - `tasks.job._id` — BSON string
 - `job_data.job_id` — BSON string
@@ -61,7 +66,8 @@ The code preserves each field's actual BSON type via `bson.M` decoding in `findI
 ## Job Discovery Logic
 
 **Phase 1** — find parent jobs:
-```
+
+```javascript
 jobs.find({
   $and: [
     { "metrics.end_time": { $lt: cutoffMS } },   // milliseconds, not BSON date
@@ -72,7 +78,8 @@ jobs.find({
 ```
 
 **Phase 2** — expand to parents + all children:
-```
+
+```javascript
 jobs.find({ "ancestors.0": { $in: parentIDs } })
 ```
 
@@ -92,7 +99,10 @@ This means two runs on the same day with the same `--cutoff-days` always produce
 
 ### ancestors field type detection
 
-Itential Platform versions differ on whether `ancestors` stores BSON ObjectIDs or hex strings. `ancestorsStoredAsStrings()` samples one parent document from the Phase 1 result to detect which type is in use, then Phase 2 sends the correct type in its `$in` filter. Sending the wrong type causes MongoDB to return 0 results silently.
+Itential Platform versions differ on whether `ancestors` stores BSON ObjectIDs or hex strings.
+`ancestorsStoredAsStrings()` samples one parent document from the Phase 1 result to detect which type is in use,
+then Phase 2 sends the correct type in its `$in` filter. Sending the wrong type causes MongoDB to return 0 results
+silently.
 
 ### Recommended indexes
 
@@ -110,7 +120,7 @@ Single `main.go` file. No subcommands, no subpackages. Keep it that way unless c
 
 ### Data flow
 
-```
+```text
 initConfig
   │
   ▼
@@ -164,7 +174,7 @@ YAML config file is auto-discovered as `./archiver.yaml` or passed via `--config
 Key flags:
 
 | Flag | Default | Notes |
-|---|---|---|
+| --- | --- | --- |
 | `--uri` | `mongodb://localhost:27017` | Use `mongodb+srv://` for Atlas |
 | `--database` | _(required)_ | |
 | `--cutoff-days` | _(required)_ | Days before today's midnight UTC |
@@ -178,7 +188,8 @@ Key flags:
 
 ## TLS
 
-`buildTLSConfig()` is only invoked when the caller sets at least one of `--tls-ca-file`, `--tls-cert-file`, or `--tls-skip-verify`. For Atlas (`mongodb+srv://`), TLS is negotiated automatically — no extra flags needed.
+`buildTLSConfig()` is only invoked when the caller sets at least one of `--tls-ca-file`, `--tls-cert-file`, or
+`--tls-skip-verify`. For Atlas (`mongodb+srv://`), TLS is negotiated automatically — no extra flags needed.
 
 - Custom CA only → `--tls-ca-file`
 - Mutual TLS → `--tls-cert-file` + `--tls-key-file` (both required together)
@@ -203,14 +214,16 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 ## Dependencies
 
 | Package | Purpose |
-|---|---|
+| --- | --- |
 | `go.mongodb.org/mongo-driver v1.17.2` | MongoDB client |
 | `github.com/spf13/pflag v1.0.5` | POSIX-style CLI flags |
 | `github.com/spf13/viper v1.19.0` | Config layering (flags + env + YAML) |
 
 ## Known Constraints & Gotchas
 
-- **`job_data.chunks` requires two-phase delete**: `files_id` is the `_id` of the `job_data.files` document, not the job ID. `findFileIDs()` resolves file IDs first; `deleteGridFS()` uses them. Do not simplify to a direct job ID filter — it will silently delete nothing.
+- **`job_data.chunks` requires two-phase delete**: `files_id` is the `_id` of the `job_data.files` document, not the
+  job ID. `findFileIDs()` resolves file IDs first; `deleteGridFS()` uses them. Do not simplify to a direct job ID
+  filter — it will silently delete nothing.
 - **`metrics.end_time` is milliseconds**: not a BSON date, not seconds. The filter passes raw `int64` milliseconds to MongoDB.
 - **Export files are overwritten on every run**: `O_TRUNC` is intentional. There is no resume — re-running always produces a clean export.
 - **Cutoff slides daily, not hourly**: the cutoff is fixed at midnight UTC of the current day. Running the tool multiple times on the same day with the same `--cutoff-days` produces the same result set.
@@ -223,12 +236,21 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 - **GridFS deletion order**: chunks before files (both before jobs). `deleteGridFS()` handles this pair. Do not reorder.
 - **Cutoff calculation**: pinned to midnight UTC via `AddDate`. Do not revert to duration arithmetic — it produces inconsistent results depending on time of day.
 - **`O_TRUNC` on export files**: intentional. Changing to `O_APPEND` reintroduces duplicate records on re-run.
-- **MongoDB interface signatures**: `CollectionAPI.DeleteMany` and `CountDocuments` intentionally omit variadic options — they only expose what the application actually uses. Expanding them requires updating both the interface and all mock implementations in tests.
+- **MongoDB interface signatures**: `CollectionAPI.DeleteMany` and `CountDocuments` intentionally omit variadic
+  options — they only expose what the application actually uses. Expanding them requires updating both the interface
+  and all mock implementations in tests.
 
 ## Project Rules
 
-- **GitHub Actions and git hooks must stay in sync**: the checks enforced by `.github/workflows/pr-compliance.yml` (branch naming, commit message format) are mirrored locally by `githooks/pre-commit` and `githooks/commit-msg`. Any change to the rules in the workflow must be accompanied by the equivalent change in the corresponding hook, and vice versa. Never update one without updating the other.
+- **GitHub Actions and git hooks must stay in sync**: the checks enforced by `.github/workflows/pr-compliance.yml`
+  (branch naming, commit message format) are mirrored locally by `githooks/pre-commit` and `githooks/commit-msg`.
+  Any change to the rules in the workflow must be accompanied by the equivalent change in the corresponding hook,
+  and vice versa. Never update one without updating the other.
 
 ## Deferred Work
 
-- **Parallel export and delete**: both phases can be parallelized using `golang.org/x/sync/errgroup`. Export: all five collections are independent, all filter IDs are pre-resolved before `runExport` is called. Delete: `tasks`, `job_data`, and `deleteGridFS` are independent and can run concurrently; `jobs` must still be last. Estimated ~3-5x speedup on large datasets. Side effect: increased MongoDB read/write pressure proportional to the number of goroutines; `--batch-delay-ms` applies per goroutine.
+- **Parallel export and delete**: both phases can be parallelized using `golang.org/x/sync/errgroup`. Export: all five
+  collections are independent, all filter IDs are pre-resolved before `runExport` is called. Delete: `tasks`,
+  `job_data`, and `deleteGridFS` are independent and can run concurrently; `jobs` must still be last. Estimated
+  ~3-5x speedup on large datasets. Side effect: increased MongoDB read/write pressure proportional to the number of
+  goroutines; `--batch-delay-ms` applies per goroutine.

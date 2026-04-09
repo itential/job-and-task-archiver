@@ -31,9 +31,10 @@ By participating in this project, you are expected to uphold our Code of Conduct
 
 ## Contributor License Agreement
 
-**All contributors must sign a Contributor License Agreement (CLA) before their contributions can be merged.** 
+**All contributors must sign a Contributor License Agreement (CLA) before their contributions can be merged.**
 
 The CLA ensures that:
+
 - You have the right to contribute the code
 - Itential has the necessary rights to use and distribute your contributions
 - The project remains legally compliant
@@ -117,12 +118,14 @@ This project uses a fork and pull request model for contributions:
 ### Branch Naming Conventions
 
 Use descriptive branch names with prefixes:
+
 - `feature/` - New features
 - `fix/` - Bug fixes
 - `chore/` - Maintenance tasks
 - `docs/` - Documentation updates
 
 Examples:
+
 - `feature/add-authentication-support`
 - `fix/handle-connection-timeout`
 - `chore/update-dependencies`
@@ -175,6 +178,7 @@ Closes #123
 This project uses Release Drafter to automatically generate release notes. Please apply appropriate labels to your pull requests:
 
 ### Change Type Labels
+
 - `feature`, `enhancement` - New features and enhancements
 - `fix`, `bug`, `bugfix` - Bug fixes and corrections
 - `chore`, `dependencies`, `refactor` - Maintenance, dependency updates, and refactoring
@@ -183,17 +187,21 @@ This project uses Release Drafter to automatically generate release notes. Pleas
 - `breaking`, `breaking-change` - Breaking changes that require major version bump
 
 ### Version Impact Labels
+
 - `major` - Breaking changes (increments major version)
 - `minor` - New features (increments minor version)
 - `patch` - Bug fixes and maintenance (increments patch version)
 
 ### Auto-Labeling
+
 The Release Drafter will automatically apply labels based on:
+
 - **Branch names**: `feature/`, `fix/`, `chore/` prefixes
 - **File changes**: Documentation files, dependency files
 - **PR titles**: Keywords like "feat", "fix", "chore"
 
 ### Special Labels
+
 - `skip-changelog` - Exclude from release notes
 - `duplicate`, `question`, `invalid`, `wontfix` - Issues that don't represent changes
 
@@ -343,6 +351,7 @@ When reporting issues, please include:
 ## Recognition
 
 Contributors who have their pull requests merged will be:
+
 - Listed in the project's contributors
 - Mentioned in release notes (when appropriate)
 - Recognized in the project documentation

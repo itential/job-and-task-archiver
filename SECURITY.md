@@ -16,7 +16,7 @@ If you discover a security vulnerability in this project:
 1. **Do not** create a public GitHub issue
 2. Report via one of the following:
    - **Preferred:** [GitHub Security Advisories](https://github.com/itential/job-and-task-archiver/security/advisories/new) (report privately)
-   - **Alternative:** security@itential.com
+   - **Alternative:** <security@itential.com>
 3. Include in your report:
    - Description of the vulnerability
    - Steps to reproduce
@@ -28,7 +28,9 @@ We will acknowledge your report within 48 hours and provide regular updates on o
 
 ## Security Best Practices
 
-<!-- MAINTAINER: Update the sections below for your project's technology stack. Remove items that don't apply and add stack-specific guidance (e.g., SQL injection prevention for database projects, CSRF protection for web apps). -->
+<!-- MAINTAINER: Update the sections below for your project's technology stack.
+Remove items that don't apply and add stack-specific guidance
+(e.g., SQL injection prevention for database projects, CSRF protection for web apps). -->
 
 - **Credentials:** Never hardcode secrets, API keys, or passwords. Use environment variables or a secrets manager.
 - **Dependencies:** Keep dependencies up to date. Run security scans regularly and monitor advisories.

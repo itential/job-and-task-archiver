@@ -79,7 +79,9 @@ The tool writes per-collection JSONL files to disk. In Kubernetes a pod's filesy
 
 The simplest approach. Works well for single-node clusters or when an NFS-backed storage class is available.
 
-Because a PVC persists across runs, each run must write to a **dated subdirectory** — otherwise the next run overwrites the previous export before it can be copied off. `args` in a pod spec are not passed through a shell, so date expansion requires invoking `sh` explicitly:
+Because a PVC persists across runs, each run must write to a **dated subdirectory** — otherwise the next run overwrites
+the previous export before it can be copied off. `args` in a pod spec are not passed through a shell, so date expansion
+requires invoking `sh` explicitly:
 
 ```yaml
 volumes:
@@ -104,7 +106,7 @@ containers:
 
 This produces a directory per run on the PVC:
 
-```
+```text
 /exports/
   2026-04-01/
   2026-04-02/
@@ -130,7 +132,8 @@ containers:
 
 ### Option 2 — initContainer with object storage upload (recommended for production)
 
-Run the archiver as an `initContainer` writing to a shared `emptyDir`, then upload the exports to S3 or GCS in the main container. Using `initContainer` guarantees the upload only runs after the archiver exits successfully.
+Run the archiver as an `initContainer` writing to a shared `emptyDir`, then upload the exports to S3 or GCS in the main
+container. Using `initContainer` guarantees the upload only runs after the archiver exits successfully.
 
 Each run gets a fresh `emptyDir` so there is no overwrite risk locally. The dated S3 prefix ensures each run's exports are preserved independently in object storage.
 
@@ -184,7 +187,7 @@ args:
 ## Key CronJob settings
 
 | Setting | Recommended value | Reason |
-|---|---|---|
+| --- | --- | --- |
 | `concurrencyPolicy` | `Forbid` | Prevents overlapping runs on large or slow databases |
 | `backoffLimit` | `0` | The tool is idempotent — prefer manual retry with full log visibility over silent automatic retries |
 | `restartPolicy` | `Never` | Consistent with `backoffLimit: 0`; a failed pod is preserved for log inspection |
