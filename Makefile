@@ -34,7 +34,7 @@ $(OUTDIR):
 
 ## hooks — install git hooks from githooks/ into .git/hooks
 hooks:
-	@for hook in githooks/*; do \
+	@for hook in .githooks/*; do \
 		name=$$(basename $$hook); \
 		cp $$hook .git/hooks/$$name; \
 		chmod +x .git/hooks/$$name; \
