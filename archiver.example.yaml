@@ -53,3 +53,12 @@ tls-ca-file: ""
 tls-cert-file: ""
 tls-key-file: ""
 tls-skip-verify: false
+
+# Logging — output is tee'd to stdout and a rotating file at log-dir/log-file.
+# Set log-dir to "" to disable file logging and write to stdout only.
+log-dir: "/var/log/archiver"
+log-file: "archiver.log"
+log-max-size-mb: 100
+log-max-backups: 7
+log-max-age-days: 30
+log-compress: true

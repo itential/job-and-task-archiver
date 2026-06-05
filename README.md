@@ -101,6 +101,7 @@ go test ./... -run TestBatchDelete     # run a specific test
 
 | Flag | Env var | Default | Description |
 | --- | --- | --- | --- |
+| `--version` | _(n/a)_ | _(n/a)_ | Print the version (from the git tag at build time) and exit. |
 | `--config` | `ARCHIVER_CONFIG` | _(none)_ | Path to YAML config file. Auto-discovers `./archiver.yaml` if present. |
 | `--uri` | `ARCHIVER_URI` | `mongodb://localhost:27017` | MongoDB connection URI. Use `mongodb+srv://` for Atlas. **Always quote on the command line** — replica set and Atlas URIs contain `?` and `&` characters that the shell interprets as special syntax if unquoted. |
 | `--database` | `ARCHIVER_DATABASE` | _(required)_ | Database name. |
@@ -117,6 +118,12 @@ go test ./... -run TestBatchDelete     # run a specific test
 | `--tls-cert-file` | `ARCHIVER_TLS_CERT_FILE` | _(none)_ | Path to a PEM file containing the client certificate (mutual TLS). Requires `--tls-key-file`. |
 | `--tls-key-file` | `ARCHIVER_TLS_KEY_FILE` | _(none)_ | Path to a PEM file containing the client private key (mutual TLS). Requires `--tls-cert-file`. |
 | `--tls-skip-verify` | `ARCHIVER_TLS_SKIP_VERIFY` | `false` | Disable TLS certificate verification. Insecure — avoid in production. |
+| `--log-dir` | `ARCHIVER_LOG_DIR` | `/var/log/archiver` | Directory for the rotating log file. Created if missing. Set to `""` to disable file logging (stdout only). |
+| `--log-file` | `ARCHIVER_LOG_FILE` | `archiver.log` | Log file name inside `--log-dir`. |
+| `--log-max-size-mb` | `ARCHIVER_LOG_MAX_SIZE_MB` | `100` | Maximum size in MB of the active log file before rotation. |
+| `--log-max-backups` | `ARCHIVER_LOG_MAX_BACKUPS` | `7` | Maximum number of rotated log files to retain. `0` keeps all. |
+| `--log-max-age-days` | `ARCHIVER_LOG_MAX_AGE_DAYS` | `30` | Maximum age in days to retain rotated log files. `0` keeps all. |
+| `--log-compress` | `ARCHIVER_LOG_COMPRESS` | `true` | Gzip rotated log files. |
 
 > **URI quoting**: always wrap the URI in single or double quotes on the command line. Replica set and Atlas URIs
 > contain `?` and `&` which the shell treats as special characters when unquoted.
@@ -130,6 +137,16 @@ go test ./... -run TestBatchDelete     # run a specific test
 > **Boolean flag syntax**: boolean flags must use `=` when setting them to `false`. Use `--export=false`, not
 > `--export false`. The latter is parsed as `--export` (true) with `false` as an unrecognized argument and silently
 > ignored.
+
+## Logging
+
+Output is written to stdout and tee'd to a rotating log file at
+`/var/log/archiver/archiver.log` by default. Rotation is handled in-process by
+[lumberjack](https://github.com/natefinch/lumberjack) — no `logrotate` config
+needed. The log directory is created on first run if it does not exist; ensure
+the process user has write permission, or override `--log-dir` to a path it can
+write to (e.g. `--log-dir ./logs` for local runs). Set `--log-dir=""` to disable
+file logging entirely.
 
 ## Config file
 

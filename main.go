@@ -8,9 +8,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"sort"
 	"strings"
 	"syscall"
@@ -23,7 +25,12 @@ import (
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
 	"go.mongodb.org/mongo-driver/mongo/readpref"
+	"gopkg.in/natefinch/lumberjack.v2"
 )
+
+// version is set at build time via -ldflags "-X main.version=..." (see Makefile).
+// The "dev" default applies to `go build` / `go run` invocations that bypass make.
+var version = "dev"
 
 // ----------------------------------------------------------------------------
 // Collection names — fixed for Itential Platform job/task data
@@ -81,6 +88,15 @@ type Config struct {
 	TLSCertFile   string
 	TLSKeyFile    string
 	TLSSkipVerify bool
+
+	// Logging — output is tee'd to stdout and to a rotating file under LogDir.
+	// Setting LogDir to "" disables file logging (stdout only).
+	LogDir         string
+	LogFile        string
+	LogMaxSizeMB   int
+	LogMaxBackups  int
+	LogMaxAgeDays  int
+	LogCompress    bool
 }
 
 // initConfig loads configuration in priority order:
@@ -98,6 +114,7 @@ func initConfig() (*Config, error) {
 		pflag.PrintDefaults()
 	}
 
+	pflag.Bool("version", false, "Print the version and exit.")
 	pflag.String("config", "", "Path to YAML config file (optional; auto-discovers ./archiver.yaml)")
 	pflag.String("uri", "mongodb://localhost:27017", "MongoDB connection URI")
 	pflag.String("database", "", "Database name (required)")
@@ -117,8 +134,23 @@ func initConfig() (*Config, error) {
 	pflag.String("tls-cert-file", "", "Path to a PEM file containing the client certificate (mutual TLS).")
 	pflag.String("tls-key-file", "", "Path to a PEM file containing the client private key (mutual TLS).")
 	pflag.Bool("tls-skip-verify", false, "Disable TLS certificate verification (insecure).")
+	pflag.String("log-dir", "/var/log/archiver",
+		"Directory for the rotating log file. Created if it does not exist. "+
+			"Set to empty (\"\") to disable file logging and write only to stdout.")
+	pflag.String("log-file", "archiver.log", "Log file name inside --log-dir.")
+	pflag.Int("log-max-size-mb", 100, "Maximum size in megabytes of the log file before it is rotated.")
+	pflag.Int("log-max-backups", 7, "Maximum number of rotated log files to retain. 0 keeps all.")
+	pflag.Int("log-max-age-days", 30, "Maximum age in days to retain rotated log files. 0 keeps all.")
+	pflag.Bool("log-compress", true, "Gzip rotated log files.")
 
 	pflag.Parse()
+
+	// Handle --version before any other resolution so users can call it
+	// without supplying the otherwise-required flags.
+	if vflag := pflag.Lookup("version"); vflag != nil && vflag.Changed {
+		fmt.Printf("itential-job-archiver %s\n", version)
+		os.Exit(0)
+	}
 
 	if err := v.BindPFlags(pflag.CommandLine); err != nil {
 		return nil, err
@@ -182,7 +214,51 @@ func initConfig() (*Config, error) {
 		TLSCertFile:    v.GetString("tls-cert-file"),
 		TLSKeyFile:     v.GetString("tls-key-file"),
 		TLSSkipVerify:  v.GetBool("tls-skip-verify"),
+		LogDir:         v.GetString("log-dir"),
+		LogFile:        v.GetString("log-file"),
+		LogMaxSizeMB:   v.GetInt("log-max-size-mb"),
+		LogMaxBackups:  v.GetInt("log-max-backups"),
+		LogMaxAgeDays:  v.GetInt("log-max-age-days"),
+		LogCompress:    v.GetBool("log-compress"),
 	}, nil
+}
+
+// ----------------------------------------------------------------------------
+// Logging
+// ----------------------------------------------------------------------------
+
+// initLogging configures the standard `log` package to tee its output to
+// stdout and a rotating file under cfg.LogDir. Rotation is delegated to
+// lumberjack. If cfg.LogDir is empty, file logging is disabled and output
+// goes to stdout only.
+//
+// Returns a closer for the underlying file sink, or nil when file logging
+// is disabled. Callers should defer the returned function.
+func initLogging(cfg *Config) (func() error, error) {
+	if cfg.LogDir == "" {
+		log.SetOutput(os.Stdout)
+		return nil, nil
+	}
+
+	if err := os.MkdirAll(cfg.LogDir, 0o755); err != nil {
+		return nil, fmt.Errorf("create log dir %q: %w", cfg.LogDir, err)
+	}
+
+	logPath := filepath.Join(cfg.LogDir, cfg.LogFile)
+	rotator := &lumberjack.Logger{
+		Filename:   logPath,
+		MaxSize:    cfg.LogMaxSizeMB,
+		MaxBackups: cfg.LogMaxBackups,
+		MaxAge:     cfg.LogMaxAgeDays,
+		Compress:   cfg.LogCompress,
+		LocalTime:  false,
+	}
+
+	log.SetOutput(io.MultiWriter(os.Stdout, rotator))
+	log.Printf("Logging to %s (rotate at %d MB, keep %d backups, max age %d days, compress=%v)",
+		logPath, cfg.LogMaxSizeMB, cfg.LogMaxBackups, cfg.LogMaxAgeDays, cfg.LogCompress)
+
+	return rotator.Close, nil
 }
 
 // ----------------------------------------------------------------------------
@@ -997,14 +1073,24 @@ func main() {
 		log.Fatalf("config: %v", err)
 	}
 
+	closeLog, err := initLogging(cfg)
+	if err != nil {
+		log.Fatalf("logging: %v", err)
+	}
+	if closeLog != nil {
+		defer func() { _ = closeLog() }()
+	}
+
+	log.Printf("itential-job-archiver %s", version)
+
 	ctx, cancel := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer cancel()
 
 	if !cfg.Export {
-		log.Println("Export disabled (--export=false)")
+		log.Println("Export disabled (export=false in config, env, or flag)")
 	}
 	if !cfg.Delete {
-		log.Println("Delete disabled — pass --delete to enable deletion after export")
+		log.Println("Delete disabled — set delete=true in config, ARCHIVER_DELETE=true, or pass --delete to enable")
 	}
 
 	client, err := buildMongoClient(ctx, cfg)
@@ -1116,7 +1202,7 @@ func main() {
 
 	// --- Delete -----------------------------------------------------------
 	if !cfg.Delete {
-		log.Println("Delete disabled — run with --delete to remove documents")
+		log.Println("Delete disabled — set delete=true in config, ARCHIVER_DELETE=true, or pass --delete to remove documents")
 		log.Printf("Total runtime: %s", time.Since(start).Round(time.Second))
 		return
 	}
