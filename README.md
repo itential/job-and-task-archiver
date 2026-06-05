@@ -80,6 +80,43 @@ sudo ln -s /usr/local/bin/itential-job-archiver-linux-amd64 /usr/local/bin/itent
 
 The symlink lets you invoke the tool as `itential-job-archiver` regardless of platform or architecture.
 
+### Create the archiver user
+
+For scheduled, unattended runs (cron or systemd), run the archiver as a dedicated
+unprivileged system user so log files, export directories, and the config file
+are owned by a least-privilege account:
+
+```bash
+sudo groupadd --system archiver
+sudo useradd  --system --gid archiver --home-dir /var/lib/archiver \
+              --shell /usr/sbin/nologin --comment "Itential job archiver" archiver
+
+sudo mkdir -p /etc/archiver /var/lib/archiver/exports /var/log/archiver
+sudo chown -R archiver:archiver /var/lib/archiver /var/log/archiver
+sudo chmod 750 /etc/archiver /var/lib/archiver /var/log/archiver
+```
+
+Place the config at `/etc/archiver/archiver.yaml` and restrict access — it
+typically contains a MongoDB connection string with credentials:
+
+```bash
+sudo install -o root -g archiver -m 0640 \
+  archiver.example.yaml /etc/archiver/archiver.yaml
+
+# Then edit /etc/archiver/archiver.yaml with your URI, database, cutoff-days, etc.
+sudo -u archiver vi /etc/archiver/archiver.yaml
+```
+
+`640 root:archiver` lets the archiver user read the config but not modify it,
+and prevents non-archiver users from reading the MongoDB credentials.
+
+For quick smoke-testing without setting up the system user, run as your own
+user with a writable log directory:
+
+```bash
+itential-job-archiver --log-dir ./logs --config ./archiver.yaml
+```
+
 ## Testing
 
 Unit tests cover the core logic and do not require a MongoDB connection.
@@ -304,9 +341,120 @@ To check that it ran and review its output:
 tail -f /var/log/archiver.log
 ```
 
-> **Note for RHEL/Rocky Linux users:** systemd timers are an alternative to cron that provide better logging via
-> `journalctl` and resilience across reboots (`Persistent=true` will catch up a missed run after downtime). Either
-> approach works — cron is simpler to set up, systemd timers are easier to operate at scale.
+> **Note for RHEL/Rocky/Ubuntu users:** systemd timers are an alternative to cron that provide better logging via
+> `journalctl` and resilience across reboots (`Persistent=true` will catch up a missed run after downtime). See the
+> next section for a full setup. Either approach works — cron is simpler to set up, systemd timers are easier to
+> operate at scale.
+
+## Scheduling with a systemd timer
+
+systemd timers replace cron on modern Linux distributions (RHEL/Rocky/Alma 8+,
+Ubuntu 18.04+, Debian 10+). They are easier to introspect (`systemctl status`,
+`journalctl -u`), survive reboots cleanly (`Persistent=true` catches up a
+missed run after downtime), and can be sandboxed using systemd's built-in
+hardening options.
+
+This setup assumes you have already created the `archiver` user as described
+in the [Install](#create-the-archiver-user) section.
+
+**1. Install a wrapper script** at `/usr/local/sbin/run-archiver`:
+
+```bash
+sudo tee /usr/local/sbin/run-archiver >/dev/null <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+
+EXPORT_DIR="/var/lib/archiver/exports/$(date +%Y-%m-%d)"
+
+exec /usr/local/bin/itential-job-archiver \
+  --config /etc/archiver/archiver.yaml \
+  --output-dir "$EXPORT_DIR"
+EOF
+sudo chmod 0755 /usr/local/sbin/run-archiver
+```
+
+The wrapper exists so the dated export directory is computed in shell — systemd
+unit files do not expand `$(date ...)` on their own.
+
+**2. Create the service unit** at `/etc/systemd/system/archiver.service`:
+
+```ini
+[Unit]
+Description=Itential job-and-task archiver
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=archiver
+Group=archiver
+ExecStart=/usr/local/sbin/run-archiver
+
+# Sandboxing — the archiver only needs to write to its own data and log dirs.
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ReadWritePaths=/var/lib/archiver /var/log/archiver
+```
+
+**3. Create the timer unit** at `/etc/systemd/system/archiver.timer`:
+
+```ini
+[Unit]
+Description=Run the Itential job-and-task archiver nightly
+
+[Timer]
+OnCalendar=*-*-* 02:00:00
+Persistent=true
+RandomizedDelaySec=10m
+Unit=archiver.service
+
+[Install]
+WantedBy=timers.target
+```
+
+`Persistent=true` ensures a run that was missed (host powered off or systemd
+down) will fire as soon as the system is back. `RandomizedDelaySec=10m`
+spreads concurrent runs across a fleet so they do not all hit MongoDB at
+exactly 02:00:00.
+
+**4. Enable and start the timer:**
+
+```bash
+sudo systemctl daemon-reload
+sudo systemctl enable --now archiver.timer
+```
+
+**5. Verify it's scheduled:**
+
+```bash
+systemctl list-timers archiver.timer
+```
+
+The `NEXT` column shows when the next run will fire; `LAST` shows the previous
+firing (or `n/a` if it has not run yet).
+
+**6. Run it once on-demand** to confirm the unit works without waiting for the
+next scheduled fire:
+
+```bash
+sudo systemctl start archiver.service
+sudo systemctl status archiver.service
+```
+
+**7. Inspect run output.** The binary writes structured log lines to the
+rotated file at `/var/log/archiver/archiver.log` (configurable via `--log-dir`
+in the YAML); systemd additionally captures stdout to the journal:
+
+```bash
+journalctl -u archiver.service -n 200 --no-pager     # most recent run
+sudo tail -f /var/log/archiver/archiver.log          # tee'd log file
+```
+
+Use the journal for short investigations and the rotated log file for longer
+history. The binary's lumberjack rotation handles log retention automatically
+— no logrotate config required.
 
 ## Example: export and import script
 
