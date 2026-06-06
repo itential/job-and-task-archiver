@@ -3,6 +3,28 @@
 Exports and optionally deletes completed and canceled Itential Platform job documents — along with all associated
 tasks and job data — from a MongoDB database. Designed to run safely against production databases with minimal impact.
 
+## Contents
+
+- [Features](#features)
+- [How it works](#how-it-works)
+- [Build](#build)
+- [Install](#install)
+  - [Create the archiver user](#create-the-archiver-user)
+- [Testing](#testing)
+- [Usage](#usage)
+- [Flags](#flags)
+- [Logging](#logging)
+- [Config file](#config-file)
+- [Examples](#examples)
+- [Archiving from production to another database](#archiving-from-production-to-another-database)
+- [Scheduling with cron](#scheduling-with-cron)
+- [Scheduling with a systemd timer](#scheduling-with-a-systemd-timer)
+- [Reclaiming disk space after delete](#reclaiming-disk-space-after-delete)
+  - [Rolling resync (replica set, non-blocking for apps)](#rolling-resync-replica-set-non-blocking-for-apps)
+  - [`compact` command (single-node, or quick fix)](#compact-command-single-node-or-quick-fix)
+- [Example: export and import script](#example-export-and-import-script)
+- [Output format](#output-format)
+
 ## Features
 
 - **Domain-aware queries** — finds eligible parent jobs first, then expands to all child jobs, exactly matching the logic of the reference `delete-jobs` Node.js script
@@ -473,6 +495,77 @@ sudo tail -f /var/log/archiver/archiver.log          # tee'd log file
 Use the journal for short investigations and the rotated log file for longer
 history. The binary's lumberjack rotation handles log retention automatically
 — no logrotate config required.
+
+## Reclaiming disk space after delete
+
+The archiver issues `deleteMany`, which marks the freed space as reusable
+**inside the same collection** but does not return it to the operating system.
+This is standard WiredTiger behavior — deletes do not shrink the data files.
+After several months of nightly runs you may notice `du -sh` on the MongoDB
+data directory has barely moved even though `db.jobs.countDocuments()` is way
+down. That is expected; new job/task inserts will reuse the freed space first.
+
+If you need the disk back — for capacity planning, to migrate to a smaller
+volume, or just for hygiene — there are two practical approaches.
+
+### Rolling resync (replica set, non-blocking for apps)
+
+The cleanest option on a 3-node replica set. App traffic stays up the whole
+time because at least two members are always available. For each node, one at
+a time:
+
+```bash
+# In mongosh, on the primary, if the target node is the primary:
+rs.stepDown(60)        # hand off primary; wait for new primary to elect
+
+# On the target host:
+sudo systemctl stop mongod
+sudo rm -rf /var/lib/mongo/*                # adjust to your dbPath
+sudo systemctl start mongod
+```
+
+The node will resync from a peer and write a fresh, compact dataset. Watch
+`rs.status()` until the node shows `stateStr: "SECONDARY"` and `optimeDate`
+caught up to the other members, then move on to the next node. After the
+third node finishes, every member is compact.
+
+Resync time scales with dataset size — expect hours for multi-hundred-GB
+databases. Do it during a low-traffic window even though it is non-blocking,
+because the initial sync pressures the source node.
+
+### `compact` command (single-node, or quick fix)
+
+Faster than resync but blocks writes to the collection being compacted. On
+older MongoDB versions it can block the whole `mongod` process. Run during a
+maintenance window:
+
+```javascript
+// In mongosh, against the itential database.
+db.runCommand({ compact: "jobs",            force: true })
+db.runCommand({ compact: "tasks",           force: true })
+db.runCommand({ compact: "job_data",        force: true })
+db.runCommand({ compact: "job_data.files",  force: true })
+db.runCommand({ compact: "job_data.chunks", force: true })
+```
+
+`force: true` is required on a primary (otherwise the command refuses). On a
+replica set, run it against each secondary first, then `rs.stepDown()` the
+primary and run it against the former primary.
+
+### What does not work
+
+- **Restarting `mongod`** — fragmentation is on disk, not in memory.
+- **`db.dropDatabase()`** — reclaims everything but also deletes everything.
+  Only useful if you have already migrated the data elsewhere.
+
+### When to do this
+
+In most Itential deployments, you do not need to reclaim space at all. The
+archiver runs nightly, so the steady-state disk footprint is roughly
+"`cutoff-days` worth of jobs plus the worst-case fragmentation gap." Once
+that gap is full, deletes free space that inserts immediately reuse. Reclaim
+disk when you need to shrink the volume, replace storage, or migrate — not
+on a schedule.
 
 ## Example: export and import script
 
