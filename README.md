@@ -306,6 +306,12 @@ sudo tee /usr/local/sbin/run-archiver >/dev/null <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Move out of whatever directory the caller was sitting in. When the wrapper
+# is invoked via `sudo -u archiver` from a root shell in /root, find(1) tries
+# to restore its initial CWD at the end of the traversal and fails because
+# the archiver user can't read /root.
+cd /var/lib/archiver
+
 RETENTION_DAYS=30
 EXPORT_ROOT="/var/lib/archiver/runs"
 EXPORT_DIR="$EXPORT_ROOT/$(date +%Y-%m-%d)"
