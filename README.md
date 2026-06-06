@@ -91,7 +91,7 @@ sudo groupadd --system archiver
 sudo useradd  --system --gid archiver --home-dir /var/lib/archiver \
               --shell /usr/sbin/nologin --comment "Itential job archiver" archiver
 
-sudo mkdir -p /etc/archiver /var/lib/archiver/exports /var/log/archiver
+sudo mkdir -p /etc/archiver /var/lib/archiver/runs /var/log/archiver
 sudo chown -R archiver:archiver /var/lib/archiver /var/log/archiver
 sudo chmod 750 /etc/archiver /var/lib/archiver /var/log/archiver
 ```
@@ -293,52 +293,75 @@ consistently. Adding this tool to cron ensures job history is pruned on a regula
 collection growth before it becomes a performance problem.
 
 The recommended pattern is to run the archiver nightly during off-peak hours via a wrapper script. Using a wrapper
-avoids the `%` escaping required in crontab and makes the dated output directory straightforward to set:
+avoids the `%` escaping required in crontab and makes the dated output directory straightforward to set.
+
+This setup assumes you have already created the `archiver` user as described in the
+[Install](#create-the-archiver-user) section. The same wrapper is also used by the systemd timer in the next section,
+so picking one scheduler does not lock you out of the other.
+
+**1. Install the wrapper** at `/usr/local/sbin/run-archiver`:
 
 ```bash
+sudo tee /usr/local/sbin/run-archiver >/dev/null <<'EOF'
 #!/usr/bin/env bash
-# /opt/archiver/run-archiver.sh
 set -euo pipefail
 
-EXPORT_DIR="/var/archives/$(date +%Y-%m-%d)"
+RETENTION_DAYS=30
+EXPORT_ROOT="/var/lib/archiver/runs"
+EXPORT_DIR="$EXPORT_ROOT/$(date +%Y-%m-%d)"
 
-itential-job-archiver \
-  --config /etc/archiver.yaml \
-  --output-dir "$EXPORT_DIR"
+# Prune previous run directories older than the retention window before
+# starting a new run.
+find "$EXPORT_ROOT" -mindepth 1 -maxdepth 1 -type d -mtime +"$RETENTION_DAYS" \
+  -exec rm -rf {} +
 
-# Remove export directories older than 30 days
-find /var/archives -maxdepth 1 -type d -mtime +30 -exec rm -rf {} +
+exec /usr/local/bin/itential-job-archiver \
+  --config /etc/archiver/archiver.yaml \
+  --output-dir "$EXPORT_DIR" \
+  --ids-file  "$EXPORT_DIR/job-ids.json"
+EOF
+sudo chmod 0755 /usr/local/sbin/run-archiver
 ```
 
-Edit the crontab with `crontab -e` and call the wrapper:
+**2. Schedule it.** Use `/etc/cron.d/archiver` so cron runs as the `archiver` user (matching the systemd setup),
+rather than dropping the entry into root's crontab:
 
-```text
-0 2 * * * /opt/archiver/run-archiver.sh >> /var/log/archiver.log 2>&1
+```bash
+sudo tee /etc/cron.d/archiver >/dev/null <<'EOF'
+0 2 * * * archiver /usr/local/sbin/run-archiver
+EOF
+sudo chmod 0644 /etc/cron.d/archiver
 ```
 
-This runs at 2:00am every day and writes exports to a dated subdirectory:
+This runs at 02:00 every day and writes each run to its own dated subdirectory:
 
 ```text
-/var/archives/
+/var/lib/archiver/runs/
   2026-04-01/
+    jobs.jsonl
+    tasks.jsonl
+    job_data.jsonl
+    job_data.files.jsonl
+    job_data.chunks.jsonl
+    job-ids.json
   2026-04-02/
   2026-04-03/
 ```
 
-Each run's exports are preserved independently, so a failed copy or upload does not risk losing the previous night's
-data. The cleanup at the end of the wrapper removes directories older than 30 days — adjust to match your retention
-policy. Adjust all paths to match your environment.
+`RETENTION_DAYS=30` in the wrapper controls how long each run directory is kept. Adjust to match your retention
+policy. The binary's own log file at `/var/log/archiver/archiver.log` is rotated independently by the embedded
+logger (configured via `log-max-*` in the YAML), so no additional log redirection is needed in the cron entry.
 
-To verify the job is registered:
+**3. Verify it's registered:**
 
 ```bash
-crontab -l
+ls -l /etc/cron.d/archiver
 ```
 
-To check that it ran and review its output:
+**4. Check recent runs:**
 
 ```bash
-tail -f /var/log/archiver.log
+sudo tail -f /var/log/archiver/archiver.log
 ```
 
 > **Note for RHEL/Rocky/Ubuntu users:** systemd timers are an alternative to cron that provide better logging via
@@ -357,23 +380,12 @@ hardening options.
 This setup assumes you have already created the `archiver` user as described
 in the [Install](#create-the-archiver-user) section.
 
-**1. Install a wrapper script** at `/usr/local/sbin/run-archiver`:
+**1. Install the wrapper script** at `/usr/local/sbin/run-archiver`. This is
+the same wrapper used by the cron setup above — install it once and use either
+scheduler. If you skipped the cron section, copy the wrapper from
+[Scheduling with cron](#scheduling-with-cron) → step 1.
 
-```bash
-sudo tee /usr/local/sbin/run-archiver >/dev/null <<'EOF'
-#!/usr/bin/env bash
-set -euo pipefail
-
-EXPORT_DIR="/var/lib/archiver/exports/$(date +%Y-%m-%d)"
-
-exec /usr/local/bin/itential-job-archiver \
-  --config /etc/archiver/archiver.yaml \
-  --output-dir "$EXPORT_DIR"
-EOF
-sudo chmod 0755 /usr/local/sbin/run-archiver
-```
-
-The wrapper exists so the dated export directory is computed in shell — systemd
+The wrapper exists so the dated run directory is computed in shell — systemd
 unit files do not expand `$(date ...)` on their own.
 
 **2. Create the service unit** at `/etc/systemd/system/archiver.service`:

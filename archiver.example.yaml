@@ -11,9 +11,17 @@ database: "itential"
 # Delete jobs completed or canceled more than this many days ago.
 cutoff-days: 30
 
-# Path to the job IDs cache file. Both the export and delete phases load from
-# this file so they always operate on the exact same set of documents.
-# Delete this file to force re-discovery on the next run.
+# Path to the job IDs cache file. Written after discovery for post-run
+# inspection — never read back; every run re-discovers from MongoDB.
+#
+# Default is a relative path ("job-ids.json"), which lands wherever the
+# process's current working directory happens to be. For production
+# deployments — especially delete-only runs where this file is the only
+# post-mortem record of what was removed — set an absolute path under the
+# archiver user's data directory, or have the scheduling wrapper place it
+# alongside the dated run output:
+#
+#   ids-file: "/var/lib/archiver/runs/job-ids.json"
 ids-file: "job-ids.json"
 
 # Output file for exported job documents (newline-delimited JSON).
