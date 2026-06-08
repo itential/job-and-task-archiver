@@ -186,6 +186,18 @@ Key flags:
 | `--skip-count` | `false` | Skip per-collection count summary |
 | `--read-preference` | `secondaryPreferred` | |
 
+## Logging
+
+Output from the standard `log` package is tee'd to stdout and to a rotating
+file under `--log-dir` (default `/var/log/archiver`, file `archiver.log`).
+Rotation is delegated to `gopkg.in/natefinch/lumberjack.v2` — size, backup
+count, age, and gzip compression are all flag-controlled. `initLogging()` runs
+right after `initConfig()` in `main`, so the two early "Using config file"
+messages emitted from inside `initConfig` go to stderr only (default before
+`log.SetOutput`). Set `--log-dir=""` to disable file logging entirely; that
+path is also the only way to skip the `MkdirAll` (handy for tests or when the
+process lacks `/var/log` write permission).
+
 ## TLS
 
 `buildTLSConfig()` is only invoked when the caller sets at least one of `--tls-ca-file`, `--tls-cert-file`, or
