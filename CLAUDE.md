@@ -2,9 +2,9 @@
 
 ## What This Tool Does
 
-`job-and-task-archiver` is a Go CLI that safely exports and optionally deletes completed and canceled Itential Platform
-job documents — along with all associated tasks and job data — from a MongoDB database. It is designed to run against
-**production databases** with minimal impact.
+`job-and-task-archiver` is a Go CLI that safely exports and optionally deletes completed, canceled, and errored
+Itential Platform job documents — along with all associated tasks and job data — from a MongoDB database. It is
+designed to run against **production databases** with minimal impact.
 
 ## Core Design Goals
 
@@ -71,11 +71,13 @@ The code preserves each field's actual BSON type via `bson.M` decoding in `findI
 jobs.find({
   $and: [
     { "metrics.end_time": { $lt: cutoffMS } },   // milliseconds, not BSON date
-    { "status": { $in: ["complete", "canceled"] } },
+    { "status": { $in: ["complete", "canceled", "error"] } },  // "error" dropped if --ignore-error
     { "ancestors": { $size: 1 } }                 // parent jobs only
   ]
 })
 ```
+
+`eligibleStatuses(cfg.IgnoreError)` builds the status list: `["complete", "canceled", "error"]` by default, or `["complete", "canceled"]` when `--ignore-error` is set. Both `discoverJobIDs()` and `ancestorsStoredAsStrings()` take this list as a parameter rather than hardcoding it.
 
 **Phase 2** — expand to parents + all children:
 
@@ -184,6 +186,7 @@ Key flags:
 | `--batch-size` | `1000` | Documents per batch |
 | `--batch-delay-ms` | `100` | Throttle between batches |
 | `--skip-count` | `false` | Skip per-collection count summary |
+| `--ignore-error` | `false` | Exclude `error` status jobs — they are skipped instead of archived |
 | `--read-preference` | `secondaryPreferred` | |
 
 ## Logging
