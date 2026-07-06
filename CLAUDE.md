@@ -77,7 +77,9 @@ jobs.find({
 })
 ```
 
-`eligibleStatuses(cfg.IgnoreError)` builds the status list: `["complete", "canceled", "error"]` by default, or `["complete", "canceled"]` when `--ignore-error` is set. Both `discoverJobIDs()` and `ancestorsStoredAsStrings()` take this list as a parameter rather than hardcoding it.
+`eligibleStatuses(cfg.IgnoreError)` builds the status list: `["complete", "canceled", "error"]` by default, or
+`["complete", "canceled"]` when `--ignore-error` is set. Both `discoverJobIDs()` and `ancestorsStoredAsStrings()`
+take this list as a parameter rather than hardcoding it.
 
 **Phase 2** — expand to parents + all children:
 
@@ -189,6 +191,12 @@ Key flags:
 | `--ignore-error` | `false` | Exclude `error` status jobs — they are skipped instead of archived |
 | `--read-preference` | `secondaryPreferred` | |
 
+Example — archive only `complete`/`canceled`, leaving `error` jobs untouched:
+
+```bash
+./itential-job-archiver --uri "$PROD_URI" --database mydb --cutoff-days 30 --ignore-error
+```
+
 ## Logging
 
 Output from the standard `log` package is tee'd to stdout and to a rotating
@@ -243,6 +251,8 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 - **Export files are overwritten on every run**: `O_TRUNC` is intentional. There is no resume — re-running always produces a clean export.
 - **Cutoff slides daily, not hourly**: the cutoff is fixed at midnight UTC of the current day. Running the tool multiple times on the same day with the same `--cutoff-days` produces the same result set.
 - **`ancestors.0` COLLSCAN without index**: Phase 2 is slow without an index on `ancestors.0`. See recommended indexes above.
+- **`error` jobs are archived by default**: this is a behavior change — earlier versions only touched
+  `complete`/`canceled` jobs. Pass `--ignore-error` to restore the old behavior and skip `error` jobs entirely.
 
 ## What NOT to Change Without Care
 

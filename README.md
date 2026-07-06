@@ -240,6 +240,18 @@ Priority order: CLI flag > environment variable > config file > default.
 
 This runs discovery and the document count summary, then exits without writing any files or deleting anything.
 
+**Archive only `complete` and `canceled` jobs, leaving `error` jobs untouched:**
+
+```bash
+./itential-job-archiver \
+  --uri "$PROD_URI" \
+  --database mydb \
+  --cutoff-days 30 \
+  --ignore-error
+```
+
+`error` jobs are excluded from discovery entirely — they are not exported and not deleted.
+
 ## Archiving from production to another database
 
 The safest approach is a two-phase workflow: export first, verify the import, then delete.
