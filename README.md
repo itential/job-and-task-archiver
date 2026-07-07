@@ -1,7 +1,7 @@
 # job-and-task-archiver
 
-Exports and optionally deletes completed and canceled Itential Platform job documents — along with all associated
-tasks and job data — from a MongoDB database. Designed to run safely against production databases with minimal impact.
+Exports and optionally deletes completed, canceled, and errored Itential Platform job documents — along with all
+associated tasks and job data — from a MongoDB database. Designed to run safely against production databases with minimal impact.
 
 ## Contents
 
@@ -42,7 +42,7 @@ tasks and job data — from a MongoDB database. Designed to run safely against p
 **Phase 1** — query the `jobs` collection for parent jobs that meet all three criteria:
 
 - `metrics.end_time` is older than the cutoff date (stored as milliseconds)
-- `status` is `complete` or `canceled`
+- `status` is `complete`, `canceled`, or `error` (pass `--ignore-error` to exclude `error` jobs and skip them instead)
 - `ancestors` array has exactly one element (the job itself — this identifies parent jobs)
 
 **Phase 2** — expand to all related jobs (parents and children) by querying for any job whose first ancestor
@@ -164,7 +164,7 @@ go test ./... -run TestBatchDelete     # run a specific test
 | `--config` | `ARCHIVER_CONFIG` | _(none)_ | Path to YAML config file. Auto-discovers `./archiver.yaml` if present. |
 | `--uri` | `ARCHIVER_URI` | `mongodb://localhost:27017` | MongoDB connection URI. Use `mongodb+srv://` for Atlas. **Always quote on the command line** — replica set and Atlas URIs contain `?` and `&` characters that the shell interprets as special syntax if unquoted. |
 | `--database` | `ARCHIVER_DATABASE` | _(required)_ | Database name. |
-| `--cutoff-days` | `ARCHIVER_CUTOFF_DAYS` | _(required)_ | Archive jobs completed or canceled before midnight UTC of the current day, minus this many days. |
+| `--cutoff-days` | `ARCHIVER_CUTOFF_DAYS` | _(required)_ | Archive jobs with status `complete`, `canceled`, or `error` (unless `--ignore-error`) before midnight UTC of the current day, minus this many days. |
 | `--ids-file` | `ARCHIVER_IDS_FILE` | `job-ids.json` | Path where discovered job IDs are written after each run (for inspection only). |
 | `--output-dir` | `ARCHIVER_OUTPUT_DIR` | `exports` | Directory where per-collection JSONL files are written. Created if it does not exist. |
 | `--batch-size` | `ARCHIVER_BATCH_SIZE` | `1000` | Documents per batch for both export and delete. |
@@ -172,6 +172,7 @@ go test ./... -run TestBatchDelete     # run a specific test
 | `--export` | `ARCHIVER_EXPORT` | `true` | Export job documents to the output directory. Use `--export=false` to skip (boolean flags require `=` syntax). |
 | `--delete` | `ARCHIVER_DELETE` | `false` | Delete documents after export. Deletion never runs unless this flag is explicitly set. Use `--delete=true` or just `--delete`. |
 | `--skip-count` | `ARCHIVER_SKIP_COUNT` | `false` | Skip the per-collection document count summary after discovery. Useful for large datasets where the count queries are slow. |
+| `--ignore-error` | `ARCHIVER_IGNORE_ERROR` | `false` | Exclude jobs with status `error` from the archive process — they are skipped, not exported or deleted. By default, `error` jobs are archived alongside `complete` and `canceled`. |
 | `--read-preference` | `ARCHIVER_READ_PREFERENCE` | `secondaryPreferred` | MongoDB read preference. Valid values: `primary`, `primaryPreferred`, `secondary`, `secondaryPreferred`, `nearest`. |
 | `--tls-ca-file` | `ARCHIVER_TLS_CA_FILE` | _(none)_ | Path to a PEM file containing the CA certificate. Use for on-prem deployments with a custom CA. |
 | `--tls-cert-file` | `ARCHIVER_TLS_CERT_FILE` | _(none)_ | Path to a PEM file containing the client certificate (mutual TLS). Requires `--tls-key-file`. |
@@ -238,6 +239,18 @@ Priority order: CLI flag > environment variable > config file > default.
 ```
 
 This runs discovery and the document count summary, then exits without writing any files or deleting anything.
+
+**Archive only `complete` and `canceled` jobs, leaving `error` jobs untouched:**
+
+```bash
+./itential-job-archiver \
+  --uri "$PROD_URI" \
+  --database mydb \
+  --cutoff-days 30 \
+  --ignore-error
+```
+
+`error` jobs are excluded from discovery entirely — they are not exported and not deleted.
 
 ## Archiving from production to another database
 

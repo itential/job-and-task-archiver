@@ -240,6 +240,38 @@ func TestCutoffCalculation(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// eligibleStatuses
+// ----------------------------------------------------------------------------
+
+func TestEligibleStatuses_Default(t *testing.T) {
+	got := eligibleStatuses(false)
+	want := bson.A{"complete", "canceled", "error"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("expected %v, got %v", want, got)
+			break
+		}
+	}
+}
+
+func TestEligibleStatuses_IgnoreError(t *testing.T) {
+	got := eligibleStatuses(true)
+	want := bson.A{"complete", "canceled"}
+	if len(got) != len(want) {
+		t.Fatalf("expected %v, got %v", want, got)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("expected %v, got %v", want, got)
+			break
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
 // findIDs
 // ----------------------------------------------------------------------------
 
@@ -322,7 +354,7 @@ func TestAncestorsStoredAsStrings_Strings(t *testing.T) {
 		},
 	}
 
-	got, err := ancestorsStoredAsStrings(context.Background(), coll, 0)
+	got, err := ancestorsStoredAsStrings(context.Background(), coll, 0, eligibleStatuses(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
@@ -339,7 +371,7 @@ func TestAncestorsStoredAsStrings_ObjectIDs(t *testing.T) {
 		},
 	}
 
-	got, err := ancestorsStoredAsStrings(context.Background(), coll, 0)
+	got, err := ancestorsStoredAsStrings(context.Background(), coll, 0, eligibleStatuses(false))
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}

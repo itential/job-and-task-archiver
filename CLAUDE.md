@@ -2,9 +2,9 @@
 
 ## What This Tool Does
 
-`job-and-task-archiver` is a Go CLI that safely exports and optionally deletes completed and canceled Itential Platform
-job documents — along with all associated tasks and job data — from a MongoDB database. It is designed to run against
-**production databases** with minimal impact.
+`job-and-task-archiver` is a Go CLI that safely exports and optionally deletes completed, canceled, and errored
+Itential Platform job documents — along with all associated tasks and job data — from a MongoDB database. It is
+designed to run against **production databases** with minimal impact.
 
 ## Core Design Goals
 
@@ -71,11 +71,15 @@ The code preserves each field's actual BSON type via `bson.M` decoding in `findI
 jobs.find({
   $and: [
     { "metrics.end_time": { $lt: cutoffMS } },   // milliseconds, not BSON date
-    { "status": { $in: ["complete", "canceled"] } },
+    { "status": { $in: ["complete", "canceled", "error"] } },  // "error" dropped if --ignore-error
     { "ancestors": { $size: 1 } }                 // parent jobs only
   ]
 })
 ```
+
+`eligibleStatuses(cfg.IgnoreError)` builds the status list: `["complete", "canceled", "error"]` by default, or
+`["complete", "canceled"]` when `--ignore-error` is set. Both `discoverJobIDs()` and `ancestorsStoredAsStrings()`
+take this list as a parameter rather than hardcoding it.
 
 **Phase 2** — expand to parents + all children:
 
@@ -184,7 +188,14 @@ Key flags:
 | `--batch-size` | `1000` | Documents per batch |
 | `--batch-delay-ms` | `100` | Throttle between batches |
 | `--skip-count` | `false` | Skip per-collection count summary |
+| `--ignore-error` | `false` | Exclude `error` status jobs — they are skipped instead of archived |
 | `--read-preference` | `secondaryPreferred` | |
+
+Example — archive only `complete`/`canceled`, leaving `error` jobs untouched:
+
+```bash
+./itential-job-archiver --uri "$PROD_URI" --database mydb --cutoff-days 30 --ignore-error
+```
 
 ## Logging
 
@@ -240,6 +251,8 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 - **Export files are overwritten on every run**: `O_TRUNC` is intentional. There is no resume — re-running always produces a clean export.
 - **Cutoff slides daily, not hourly**: the cutoff is fixed at midnight UTC of the current day. Running the tool multiple times on the same day with the same `--cutoff-days` produces the same result set.
 - **`ancestors.0` COLLSCAN without index**: Phase 2 is slow without an index on `ancestors.0`. See recommended indexes above.
+- **`error` jobs are archived by default**: this is a behavior change — earlier versions only touched
+  `complete`/`canceled` jobs. Pass `--ignore-error` to restore the old behavior and skip `error` jobs entirely.
 
 ## What NOT to Change Without Care
 

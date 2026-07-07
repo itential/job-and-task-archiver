@@ -79,6 +79,7 @@ type Config struct {
 	Export         bool
 	Delete         bool
 	SkipCount      bool
+	IgnoreError    bool // when true, jobs with status "error" are excluded from archiving
 	ReadPreference string
 
 	// TLS — leave empty to rely on URI-embedded TLS (e.g. mongodb+srv://).
@@ -118,7 +119,7 @@ func initConfig() (*Config, error) {
 	pflag.String("config", "", "Path to YAML config file (optional; auto-discovers ./archiver.yaml)")
 	pflag.String("uri", "mongodb://localhost:27017", "MongoDB connection URI")
 	pflag.String("database", "", "Database name (required)")
-	pflag.Int("cutoff-days", 0, "Delete jobs completed or canceled more than this many days ago (required)")
+	pflag.Int("cutoff-days", 0, "Archive jobs with status 'complete', 'canceled', or 'error' (unless --ignore-error) more than this many days ago (required)")
 	pflag.String("ids-file", "job-ids.json",
 		"Path to the job IDs cache file. Stores discovered IDs so both the export "+
 			"and delete phases operate on the exact same set of jobs. Delete this file to force re-discovery.")
@@ -128,6 +129,7 @@ func initConfig() (*Config, error) {
 	pflag.Bool("export", true, "Export job documents to the output file. Set to false to skip export.")
 	pflag.Bool("delete", false, "Delete documents after export. Deletion is skipped unless this flag is set.")
 	pflag.Bool("skip-count", false, "Skip the per-collection document count summary after discovery.")
+	pflag.Bool("ignore-error", false, "Exclude jobs with status 'error' from the archive process (they are skipped, not exported or deleted). By default, 'error' jobs are archived alongside 'complete' and 'canceled'.")
 	pflag.String("read-preference", "secondaryPreferred",
 		"MongoDB read preference: primary|primaryPreferred|secondary|secondaryPreferred|nearest")
 	pflag.String("tls-ca-file", "", "Path to a PEM file containing the CA certificate.")
@@ -209,6 +211,7 @@ func initConfig() (*Config, error) {
 		Export:         v.GetBool("export"),
 		Delete:         v.GetBool("delete"),
 		SkipCount:      v.GetBool("skip-count"),
+		IgnoreError:    v.GetBool("ignore-error"),
 		ReadPreference: v.GetString("read-preference"),
 		TLSCAFile:      v.GetString("tls-ca-file"),
 		TLSCertFile:    v.GetString("tls-cert-file"),
@@ -489,10 +492,20 @@ func (d *mongoDatabase) Collection(name string) CollectionAPI {
 // Job ID discovery
 // ----------------------------------------------------------------------------
 
+// eligibleStatuses returns the job statuses considered archivable. Jobs with
+// status "error" are included by default; --ignore-error excludes them so
+// they are skipped by the archive process.
+func eligibleStatuses(ignoreError bool) bson.A {
+	if ignoreError {
+		return bson.A{"complete", "canceled"}
+	}
+	return bson.A{"complete", "canceled", "error"}
+}
+
 // discoverJobIDs finds all job IDs eligible for deletion using a two-phase
 // query that matches the logic in the reference Node.js delete-jobs script.
 //
-// Phase 1: Find parent jobs that are completed or canceled and older than the
+// Phase 1: Find parent jobs whose status is in statuses and are older than the
 // cutoff. Parent jobs are identified by having exactly one ancestor — themselves.
 //
 // Phase 2: Expand to all jobs (parents + children) whose first ancestor matches
@@ -509,18 +522,18 @@ func (d *mongoDatabase) Collection(name string) CollectionAPI {
 // Phase 2 is batched (1000 parent IDs per query) to avoid oversized $in clauses,
 // and detects whether ancestors values are stored as BSON ObjectIDs or hex strings
 // by sampling one parent document — Itential versions differ on this.
-func discoverJobIDs(ctx context.Context, db DatabaseAPI, cutoffMS int64) ([]interface{}, error) {
+func discoverJobIDs(ctx context.Context, db DatabaseAPI, cutoffMS int64, statuses bson.A) ([]interface{}, error) {
 	const phase2Batch = 1000
 
 	jobs := db.Collection(collJobs)
 
-	// Phase 1: find completed/canceled parent jobs older than the cutoff.
-	log.Println("Phase 1: Finding completed and canceled parent jobs older than the cutoff...")
+	// Phase 1: find eligible parent jobs older than the cutoff.
+	log.Printf("Phase 1: Finding parent jobs with status %v older than the cutoff...", statuses)
 	t0 := time.Now()
 	parentIDs, err := findIDs(ctx, jobs, bson.D{
 		{Key: "$and", Value: bson.A{
 			bson.D{{Key: "metrics.end_time", Value: bson.D{{Key: "$lt", Value: cutoffMS}}}},
-			bson.D{{Key: "status", Value: bson.D{{Key: "$in", Value: bson.A{"complete", "canceled"}}}}},
+			bson.D{{Key: "status", Value: bson.D{{Key: "$in", Value: statuses}}}},
 			bson.D{{Key: "ancestors", Value: bson.D{{Key: "$size", Value: 1}}}},
 		}},
 	})
@@ -533,7 +546,7 @@ func discoverJobIDs(ctx context.Context, db DatabaseAPI, cutoffMS int64) ([]inte
 	}
 
 	// Detect whether ancestors values are stored as BSON ObjectIDs or hex strings.
-	useStrings, err := ancestorsStoredAsStrings(ctx, jobs, cutoffMS)
+	useStrings, err := ancestorsStoredAsStrings(ctx, jobs, cutoffMS, statuses)
 	if err != nil {
 		return nil, fmt.Errorf("inspect ancestors field type: %w", err)
 	}
@@ -604,12 +617,12 @@ func discoverJobIDs(ctx context.Context, db DatabaseAPI, cutoffMS int64) ([]inte
 // the Phase 1 filter with a limit of 1 rather than fetching by _id, which
 // avoids a "no documents" error when secondaryPreferred routes the two queries
 // to different replica set members.
-func ancestorsStoredAsStrings(ctx context.Context, coll CollectionAPI, cutoffMS int64) (bool, error) {
+func ancestorsStoredAsStrings(ctx context.Context, coll CollectionAPI, cutoffMS int64, statuses bson.A) (bool, error) {
 	var doc bson.M
 	err := coll.FindOne(ctx, bson.D{
 		{Key: "$and", Value: bson.A{
 			bson.D{{Key: "metrics.end_time", Value: bson.D{{Key: "$lt", Value: cutoffMS}}}},
-			bson.D{{Key: "status", Value: bson.D{{Key: "$in", Value: bson.A{"complete", "canceled"}}}}},
+			bson.D{{Key: "status", Value: bson.D{{Key: "$in", Value: statuses}}}},
 			bson.D{{Key: "ancestors", Value: bson.D{{Key: "$size", Value: 1}}}},
 		}},
 	}).Decode(&doc)
@@ -1132,7 +1145,12 @@ func main() {
 	// the actual BSON type stored in MongoDB, so $in filters send the right type.
 	log.Println("Discovering job IDs — this may take a few minutes on large databases...")
 
-	ids, err := discoverJobIDs(ctx, db, cutoffMS)
+	statuses := eligibleStatuses(cfg.IgnoreError)
+	if cfg.IgnoreError {
+		log.Println("Ignoring 'error' status jobs (--ignore-error)")
+	}
+
+	ids, err := discoverJobIDs(ctx, db, cutoffMS, statuses)
 	if err != nil {
 		log.Fatalf("discover: %v", err)
 	}
@@ -1163,8 +1181,8 @@ func main() {
 	// to a different ID set and must be reset. Remove it now so the export
 	// always starts from the beginning of the newly discovered IDs.
 	if len(ids) == 0 {
-		log.Println("No eligible jobs found. Check cutoff-days, database name, and that the " +
-			"jobs collection contains documents with status 'complete' or 'canceled'.")
+		log.Printf("No eligible jobs found. Check cutoff-days, database name, and that the "+
+			"jobs collection contains documents with status %v.", statuses)
 		return
 	}
 
