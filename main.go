@@ -502,17 +502,43 @@ func eligibleStatuses(ignoreError bool) bson.A {
 	return bson.A{"complete", "canceled", "error"}
 }
 
+// statusDateField returns the metrics field that determines a job's age for a
+// given status. "complete" and "canceled" jobs finish normally and get
+// metrics.end_time. "error" jobs never reach that terminal step, so
+// metrics.end_time is never set for them — their age is measured from
+// metrics.start_time instead. Both fields are stored as milliseconds since
+// epoch (not a BSON date).
+func statusDateField(status string) string {
+	if status == "error" {
+		return "metrics.start_time"
+	}
+	return "metrics.end_time"
+}
+
+// statusEligibilityFilter builds the Phase 1 parent-job filter for a single
+// status, using whichever date field applies to that status.
+func statusEligibilityFilter(status string, cutoffMS int64) bson.D {
+	return bson.D{
+		{Key: "$and", Value: bson.A{
+			bson.D{{Key: statusDateField(status), Value: bson.D{{Key: "$lt", Value: cutoffMS}}}},
+			bson.D{{Key: "status", Value: status}},
+			bson.D{{Key: "ancestors", Value: bson.D{{Key: "$size", Value: 1}}}},
+		}},
+	}
+}
+
 // discoverJobIDs finds all job IDs eligible for deletion using a two-phase
 // query that matches the logic in the reference Node.js delete-jobs script.
 //
 // Phase 1: Find parent jobs whose status is in statuses and are older than the
 // cutoff. Parent jobs are identified by having exactly one ancestor — themselves.
+// Each status is queried separately because "error" jobs are aged off
+// metrics.start_time while "complete"/"canceled" jobs use metrics.end_time
+// (see statusDateField).
 //
 // Phase 2: Expand to all jobs (parents + children) whose first ancestor matches
 // any of the parent IDs found in phase 1. This captures child jobs that may
 // not individually meet the age/status criteria but belong to an eligible parent.
-//
-// metrics.end_time is stored as milliseconds since epoch (not a BSON date).
 //
 // IDs are returned as []interface{} where each element is either a
 // primitive.ObjectID or a string, matching the actual BSON type stored in
@@ -527,18 +553,23 @@ func discoverJobIDs(ctx context.Context, db DatabaseAPI, cutoffMS int64, statuse
 
 	jobs := db.Collection(collJobs)
 
-	// Phase 1: find eligible parent jobs older than the cutoff.
+	// Phase 1: find eligible parent jobs older than the cutoff, one status at a
+	// time since each status ages off a different metrics field.
 	log.Printf("Phase 1: Finding parent jobs with status %v older than the cutoff...", statuses)
 	t0 := time.Now()
-	parentIDs, err := findIDs(ctx, jobs, bson.D{
-		{Key: "$and", Value: bson.A{
-			bson.D{{Key: "metrics.end_time", Value: bson.D{{Key: "$lt", Value: cutoffMS}}}},
-			bson.D{{Key: "status", Value: bson.D{{Key: "$in", Value: statuses}}}},
-			bson.D{{Key: "ancestors", Value: bson.D{{Key: "$size", Value: 1}}}},
-		}},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("find parent jobs: %w", err)
+	var parentIDs []interface{}
+	for _, s := range statuses {
+		status, ok := s.(string)
+		if !ok {
+			return nil, fmt.Errorf("unexpected status type %T in eligible statuses", s)
+		}
+		statusIDs, err := findIDs(ctx, jobs, statusEligibilityFilter(status, cutoffMS))
+		if err != nil {
+			return nil, fmt.Errorf("find parent jobs (status=%s): %w", status, err)
+		}
+		log.Printf("Phase 1: %d parent jobs found with status %q (aged off %s)",
+			len(statusIDs), status, statusDateField(status))
+		parentIDs = append(parentIDs, statusIDs...)
 	}
 	log.Printf("Phase 1: %d parent jobs found in %s", len(parentIDs), time.Since(t0).Round(time.Millisecond))
 	if len(parentIDs) == 0 {
@@ -616,25 +647,30 @@ func discoverJobIDs(ctx context.Context, db DatabaseAPI, cutoffMS int64, statuse
 // the ancestors array holds hex strings or native BSON ObjectIDs. It re-runs
 // the Phase 1 filter with a limit of 1 rather than fetching by _id, which
 // avoids a "no documents" error when secondaryPreferred routes the two queries
-// to different replica set members.
+// to different replica set members. It tries each status in turn (using that
+// status's own date field, see statusDateField) and returns the first match —
+// Phase 1 already guarantees at least one status has eligible parents.
 func ancestorsStoredAsStrings(ctx context.Context, coll CollectionAPI, cutoffMS int64, statuses bson.A) (bool, error) {
-	var doc bson.M
-	err := coll.FindOne(ctx, bson.D{
-		{Key: "$and", Value: bson.A{
-			bson.D{{Key: "metrics.end_time", Value: bson.D{{Key: "$lt", Value: cutoffMS}}}},
-			bson.D{{Key: "status", Value: bson.D{{Key: "$in", Value: statuses}}}},
-			bson.D{{Key: "ancestors", Value: bson.D{{Key: "$size", Value: 1}}}},
-		}},
-	}).Decode(&doc)
-	if err != nil {
-		return false, err
+	var lastErr error
+	for _, s := range statuses {
+		status, ok := s.(string)
+		if !ok {
+			continue
+		}
+		var doc bson.M
+		err := coll.FindOne(ctx, statusEligibilityFilter(status, cutoffMS)).Decode(&doc)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		ancestors, ok := doc["ancestors"].(bson.A)
+		if !ok || len(ancestors) == 0 {
+			return false, nil
+		}
+		_, isString := ancestors[0].(string)
+		return isString, nil
 	}
-	ancestors, ok := doc["ancestors"].(bson.A)
-	if !ok || len(ancestors) == 0 {
-		return false, nil
-	}
-	_, isString := ancestors[0].(string)
-	return isString, nil
+	return false, lastErr
 }
 
 // findIDs runs a find query and returns only the _id values of matching

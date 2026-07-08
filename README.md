@@ -41,9 +41,13 @@ associated tasks and job data — from a MongoDB database. Designed to run safel
 
 **Phase 1** — query the `jobs` collection for parent jobs that meet all three criteria:
 
-- `metrics.end_time` is older than the cutoff date (stored as milliseconds)
+- The job is old enough, per its status (stored as milliseconds since epoch, not a BSON date):
+  - `complete` and `canceled` jobs are aged off `metrics.end_time`
+  - `error` jobs never reach that terminal step, so `metrics.end_time` is never set for them — they are aged off `metrics.start_time` instead
 - `status` is `complete`, `canceled`, or `error` (pass `--ignore-error` to exclude `error` jobs and skip them instead)
 - `ancestors` array has exactly one element (the job itself — this identifies parent jobs)
+
+Each status is queried separately so the correct date field is used. The Phase 1 log line reports a count per status.
 
 **Phase 2** — expand to all related jobs (parents and children) by querying for any job whose first ancestor
 (`ancestors.0`) matches a parent ID from phase 1. This captures child jobs that may not individually meet the age or

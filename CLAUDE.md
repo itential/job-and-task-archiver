@@ -65,29 +65,49 @@ The code preserves each field's actual BSON type via `bson.M` decoding in `findI
 
 ## Job Discovery Logic
 
-**Phase 1** — find parent jobs:
+**Phase 1** — find parent jobs, queried one status at a time because each status ages off a different metrics
+field:
 
 ```javascript
+// complete / canceled — aged off metrics.end_time
 jobs.find({
   $and: [
     { "metrics.end_time": { $lt: cutoffMS } },   // milliseconds, not BSON date
-    { "status": { $in: ["complete", "canceled", "error"] } },  // "error" dropped if --ignore-error
+    { "status": "complete" },                     // or "canceled"
     { "ancestors": { $size: 1 } }                 // parent jobs only
+  ]
+})
+
+// error — aged off metrics.start_time (dropped entirely if --ignore-error)
+jobs.find({
+  $and: [
+    { "metrics.start_time": { $lt: cutoffMS } },  // milliseconds, not BSON date
+    { "status": "error" },
+    { "ancestors": { $size: 1 } }
   ]
 })
 ```
 
-`eligibleStatuses(cfg.IgnoreError)` builds the status list: `["complete", "canceled", "error"]` by default, or
-`["complete", "canceled"]` when `--ignore-error` is set. Both `discoverJobIDs()` and `ancestorsStoredAsStrings()`
-take this list as a parameter rather than hardcoding it.
+**`error` jobs never reach `metrics.end_time`** — that field is only set on normal completion, so a job that ended
+in an error state never gets it populated. Filtering error jobs on `metrics.end_time` silently excludes all of them
+regardless of age (a real production bug found via a discrepancy between a raw `status: "error"` count and the
+count `discoverJobIDs()` was surfacing). `statusDateField(status)` returns the correct field per status
+(`metrics.start_time` for `error`, `metrics.end_time` otherwise); `statusEligibilityFilter(status, cutoffMS)` builds
+the per-status filter shown above.
 
-**Phase 2** — expand to parents + all children:
+`eligibleStatuses(cfg.IgnoreError)` builds the status list: `["complete", "canceled", "error"]` by default, or
+`["complete", "canceled"]` when `--ignore-error` is set. `discoverJobIDs()` iterates this list, running one Phase 1
+query per status and merging the results; it logs a per-status count (e.g. `Phase 1: 42 parent jobs found with
+status "error" (aged off metrics.start_time)`) so the age-field split is visible in the logs. `ancestorsStoredAsStrings()`
+takes the same list and tries each status in turn until it finds a sample document — Phase 1 having found at least
+one parent guarantees one status will succeed.
+
+**Phase 2** — expand to parents + all children (unaffected by the per-status date field, since it matches purely on
+`ancestors.0`):
 
 ```javascript
 jobs.find({ "ancestors.0": { $in: parentIDs } })
 ```
-
-`metrics.end_time` is stored as **milliseconds since epoch** (not a BSON date).
 
 ### Cutoff calculation
 
@@ -247,7 +267,8 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 - **`job_data.chunks` requires two-phase delete**: `files_id` is the `_id` of the `job_data.files` document, not the
   job ID. `findFileIDs()` resolves file IDs first; `deleteGridFS()` uses them. Do not simplify to a direct job ID
   filter — it will silently delete nothing.
-- **`metrics.end_time` is milliseconds**: not a BSON date, not seconds. The filter passes raw `int64` milliseconds to MongoDB.
+- **`metrics.end_time` / `metrics.start_time` are milliseconds**: not a BSON date, not seconds. The filter passes raw `int64` milliseconds to MongoDB.
+- **`error` jobs have no `metrics.end_time`**: they never reach normal completion, so that field is never populated for them. Discovery ages `error` jobs off `metrics.start_time` instead (see `statusDateField()`); `complete`/`canceled` still use `metrics.end_time`. Filtering `error` jobs on `end_time` was a real production bug — it silently matched zero of them regardless of age.
 - **Export files are overwritten on every run**: `O_TRUNC` is intentional. There is no resume — re-running always produces a clean export.
 - **Cutoff slides daily, not hourly**: the cutoff is fixed at midnight UTC of the current day. Running the tool multiple times on the same day with the same `--cutoff-days` produces the same result set.
 - **`ancestors.0` COLLSCAN without index**: Phase 2 is slow without an index on `ancestors.0`. See recommended indexes above.
@@ -257,6 +278,7 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 ## What NOT to Change Without Care
 
 - **Deletion order**: tasks/data before jobs. If jobs are deleted first and the run is interrupted, their IDs are gone and phase 3 cannot resume.
+- **Per-status date field in Phase 1** (`statusDateField()`): `error` uses `metrics.start_time`, `complete`/`canceled` use `metrics.end_time`. Collapsing this back to a single field for all statuses reintroduces the silent-exclusion bug for `error` jobs.
 - **Phase 2 discovery query** (`ancestors.0`): finds parents AND all children in one pass. Changing this filter will miss child jobs.
 - **GridFS deletion order**: chunks before files (both before jobs). `deleteGridFS()` handles this pair. Do not reorder.
 - **Cutoff calculation**: pinned to midnight UTC via `AddDate`. Do not revert to duration arithmetic — it produces inconsistent results depending on time of day.
