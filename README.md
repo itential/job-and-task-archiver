@@ -41,9 +41,13 @@ associated tasks and job data — from a MongoDB database. Designed to run safel
 
 **Phase 1** — query the `jobs` collection for parent jobs that meet all three criteria:
 
-- `metrics.end_time` is older than the cutoff date (stored as milliseconds)
+- The job is old enough, per its status (stored as milliseconds since epoch, not a BSON date):
+  - `complete` and `canceled` jobs are aged off `metrics.end_time`
+  - `error` jobs never reach that terminal step, so `metrics.end_time` is never set for them — they are aged off `metrics.start_time` instead
 - `status` is `complete`, `canceled`, or `error` (pass `--ignore-error` to exclude `error` jobs and skip them instead)
 - `ancestors` array has exactly one element (the job itself — this identifies parent jobs)
+
+Each status is queried separately so the correct date field is used. The Phase 1 log line reports a count per status.
 
 **Phase 2** — expand to all related jobs (parents and children) by querying for any job whose first ancestor
 (`ancestors.0`) matches a parent ID from phase 1. This captures child jobs that may not individually meet the age or
@@ -64,7 +68,8 @@ Deletions happen in this order so that job IDs remain queryable until the very e
 | 5 | `jobs` | `_id` in job IDs |
 
 `job_data.chunks` requires a two-phase delete: `files_id` references the `_id` of the parent `job_data.files`
-document, not the job ID. File document IDs are resolved first, then chunks are deleted by those IDs.
+document, not the job ID. File document IDs are resolved first, then chunks are deleted by those IDs. If no
+`job_data.files` documents are found for the job ID set (no GridFS attachments), steps 3 and 4 are skipped entirely.
 
 ## Build
 

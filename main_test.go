@@ -272,6 +272,23 @@ func TestEligibleStatuses_IgnoreError(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// statusDateField
+// ----------------------------------------------------------------------------
+
+func TestStatusDateField(t *testing.T) {
+	cases := map[string]string{
+		"complete": "metrics.end_time",
+		"canceled": "metrics.end_time",
+		"error":    "metrics.start_time",
+	}
+	for status, want := range cases {
+		if got := statusDateField(status); got != want {
+			t.Errorf("statusDateField(%q) = %q, want %q", status, got, want)
+		}
+	}
+}
+
+// ----------------------------------------------------------------------------
 // findIDs
 // ----------------------------------------------------------------------------
 
@@ -381,6 +398,93 @@ func TestAncestorsStoredAsStrings_ObjectIDs(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// discoverJobIDs
+// ----------------------------------------------------------------------------
+
+// dateFieldQueried extracts the metrics field name (e.g. "metrics.end_time")
+// that a statusEligibilityFilter-shaped filter is filtering on with $lt.
+func dateFieldQueried(t *testing.T, filter interface{}) string {
+	t.Helper()
+	and, ok := filter.(bson.D)
+	if !ok || len(and) != 1 || and[0].Key != "$and" {
+		t.Fatalf("unexpected filter shape: %#v", filter)
+	}
+	for _, sub := range and[0].Value.(bson.A) {
+		subD, ok := sub.(bson.D)
+		if !ok || len(subD) != 1 {
+			continue
+		}
+		if subD[0].Key != "status" && subD[0].Key != "ancestors" {
+			return subD[0].Key
+		}
+	}
+	t.Fatalf("no date field found in filter: %#v", filter)
+	return ""
+}
+
+// TestDiscoverJobIDs_ErrorStatusUsesStartTime is a regression test for the bug
+// where "error" jobs were silently excluded from discovery because they never
+// reach metrics.end_time (only complete/canceled jobs do). It confirms the
+// error-status query filters on metrics.start_time instead, and that an error
+// job with no end_time still surfaces in the final result set.
+func TestDiscoverJobIDs_ErrorStatusUsesStartTime(t *testing.T) {
+	var queriedFields []string
+	callIdx := 0
+
+	coll := &mockCollection{
+		name: collJobs,
+		findFn: func(_ context.Context, filter interface{}, _ ...*options.FindOptions) (CursorAPI, error) {
+			var docs []bson.M
+			switch callIdx {
+			case 0: // status=complete
+				queriedFields = append(queriedFields, dateFieldQueried(t, filter))
+				docs = []bson.M{{"_id": "complete1"}}
+			case 1: // status=canceled
+				queriedFields = append(queriedFields, dateFieldQueried(t, filter))
+				docs = nil
+			case 2: // status=error
+				queriedFields = append(queriedFields, dateFieldQueried(t, filter))
+				docs = []bson.M{{"_id": "error1"}}
+			default: // Phase 2 batch expansion
+				docs = []bson.M{{"_id": "complete1"}, {"_id": "error1"}}
+			}
+			callIdx++
+			return newMockCursor(docs), nil
+		},
+		findOneFn: func(_ context.Context, _ interface{}) SingleResultAPI {
+			return &mockSingleResult{doc: bson.M{"ancestors": bson.A{"complete1"}}}
+		},
+	}
+	db := &mockDatabase{collections: map[string]CollectionAPI{collJobs: coll}}
+
+	ids, err := discoverJobIDs(context.Background(), db, 1000, eligibleStatuses(false))
+	if err != nil {
+		t.Fatalf("discoverJobIDs: %v", err)
+	}
+
+	wantFields := []string{"metrics.end_time", "metrics.end_time", "metrics.start_time"}
+	if len(queriedFields) < 3 {
+		t.Fatalf("expected at least 3 Phase 1 queries, got %d", len(queriedFields))
+	}
+	for i, want := range wantFields {
+		if queriedFields[i] != want {
+			t.Errorf("status query %d: expected date field %q, got %q", i, want, queriedFields[i])
+		}
+	}
+
+	found := map[interface{}]bool{}
+	for _, id := range ids {
+		found[id] = true
+	}
+	if !found["error1"] {
+		t.Error("expected error-status job (aged off metrics.start_time) to be discovered")
+	}
+	if !found["complete1"] {
+		t.Error("expected complete-status job to still be discovered")
+	}
+}
+
+// ----------------------------------------------------------------------------
 // batchDelete
 // ----------------------------------------------------------------------------
 
@@ -436,7 +540,7 @@ func TestBatchDelete_MultipleBatches(t *testing.T) {
 
 func TestBatchDelete_Empty(t *testing.T) {
 	coll := &mockCollection{
-		name:         collTasks,
+		name: collTasks,
 		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
 			return &mongo.DeleteResult{DeletedCount: 0}, nil
 		},
@@ -449,6 +553,96 @@ func TestBatchDelete_Empty(t *testing.T) {
 	}
 	if deleted != 0 {
 		t.Errorf("expected 0 deleted, got %d", deleted)
+	}
+}
+
+// ----------------------------------------------------------------------------
+// deleteGridFS
+// ----------------------------------------------------------------------------
+
+// TestDeleteGridFS_NoFilesSkipsChunksAndFilesDelete is a regression test: when
+// no job_data.files documents match the given job IDs, neither
+// job_data.chunks nor job_data.files should have DeleteMany called against
+// them — there is nothing to delete, and running the query anyway wastes a
+// round trip per batch for no effect.
+func TestDeleteGridFS_NoFilesSkipsChunksAndFilesDelete(t *testing.T) {
+	filesDeleteCalled := false
+	chunksDeleteCalled := false
+
+	filesColl := &mockCollection{
+		name: collJobFiles,
+		findFn: func(_ context.Context, _ interface{}, _ ...*options.FindOptions) (CursorAPI, error) {
+			return newMockCursor(nil), nil
+		},
+		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
+			filesDeleteCalled = true
+			return &mongo.DeleteResult{}, nil
+		},
+	}
+	chunksColl := &mockCollection{
+		name: collJobChunks,
+		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
+			chunksDeleteCalled = true
+			return &mongo.DeleteResult{}, nil
+		},
+	}
+	db := &mockDatabase{collections: map[string]CollectionAPI{
+		collJobFiles:  filesColl,
+		collJobChunks: chunksColl,
+	}}
+
+	cfg := &Config{BatchSize: 1000, BatchDelayMS: 0}
+	chunksDeleted, filesDeleted, err := deleteGridFS(context.Background(), db, []interface{}{"job1"}, cfg)
+	if err != nil {
+		t.Fatalf("deleteGridFS: %v", err)
+	}
+	if filesDeleteCalled {
+		t.Error("expected job_data.files DeleteMany to be skipped when no file IDs found")
+	}
+	if chunksDeleteCalled {
+		t.Error("expected job_data.chunks DeleteMany to be skipped when no file IDs found")
+	}
+	if chunksDeleted != 0 || filesDeleted != 0 {
+		t.Errorf("expected 0 deleted for both collections, got chunks=%d files=%d", chunksDeleted, filesDeleted)
+	}
+}
+
+// TestDeleteGridFS_WithFilesDeletesBoth confirms the existing behavior is
+// unchanged when job_data.files documents do exist: both chunks and files
+// are still deleted.
+func TestDeleteGridFS_WithFilesDeletesBoth(t *testing.T) {
+	fileOID := primitive.NewObjectID()
+
+	filesColl := &mockCollection{
+		name: collJobFiles,
+		findFn: func(_ context.Context, _ interface{}, _ ...*options.FindOptions) (CursorAPI, error) {
+			return newMockCursor([]bson.M{{"_id": fileOID}}), nil
+		},
+		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
+			return &mongo.DeleteResult{DeletedCount: 1}, nil
+		},
+	}
+	chunksColl := &mockCollection{
+		name: collJobChunks,
+		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
+			return &mongo.DeleteResult{DeletedCount: 3}, nil
+		},
+	}
+	db := &mockDatabase{collections: map[string]CollectionAPI{
+		collJobFiles:  filesColl,
+		collJobChunks: chunksColl,
+	}}
+
+	cfg := &Config{BatchSize: 1000, BatchDelayMS: 0}
+	chunksDeleted, filesDeleted, err := deleteGridFS(context.Background(), db, []interface{}{"job1"}, cfg)
+	if err != nil {
+		t.Fatalf("deleteGridFS: %v", err)
+	}
+	if chunksDeleted != 3 {
+		t.Errorf("expected 3 chunks deleted, got %d", chunksDeleted)
+	}
+	if filesDeleted != 1 {
+		t.Errorf("expected 1 file deleted, got %d", filesDeleted)
 	}
 }
 

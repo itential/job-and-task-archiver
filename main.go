@@ -72,8 +72,8 @@ type Config struct {
 	URI            string
 	Database       string
 	CutoffDays     int
-	IDsFile   string // cache of discovered job IDs shared across phases
-	OutputDir string // directory where per-collection JSONL files are written
+	IDsFile        string // cache of discovered job IDs shared across phases
+	OutputDir      string // directory where per-collection JSONL files are written
 	BatchSize      int
 	BatchDelayMS   int
 	Export         bool
@@ -92,12 +92,12 @@ type Config struct {
 
 	// Logging — output is tee'd to stdout and to a rotating file under LogDir.
 	// Setting LogDir to "" disables file logging (stdout only).
-	LogDir         string
-	LogFile        string
-	LogMaxSizeMB   int
-	LogMaxBackups  int
-	LogMaxAgeDays  int
-	LogCompress    bool
+	LogDir        string
+	LogFile       string
+	LogMaxSizeMB  int
+	LogMaxBackups int
+	LogMaxAgeDays int
+	LogCompress   bool
 }
 
 // initConfig loads configuration in priority order:
@@ -205,7 +205,7 @@ func initConfig() (*Config, error) {
 		Database:       v.GetString("database"),
 		CutoffDays:     v.GetInt("cutoff-days"),
 		IDsFile:        v.GetString("ids-file"),
-		OutputDir: v.GetString("output-dir"),
+		OutputDir:      v.GetString("output-dir"),
 		BatchSize:      v.GetInt("batch-size"),
 		BatchDelayMS:   v.GetInt("batch-delay-ms"),
 		Export:         v.GetBool("export"),
@@ -304,11 +304,10 @@ func idType(id interface{}) string {
 // load so that $in filters are sent with the matching BSON type.
 type IDCache struct {
 	CutoffMS  int64    `json:"cutoff_ms"`
-	IDType    string   `json:"id_type"`  // "objectid" or "string"
-	JobIDs    []string `json:"job_ids"`  // sorted; hex for ObjectIDs, raw for strings
+	IDType    string   `json:"id_type"` // "objectid" or "string"
+	JobIDs    []string `json:"job_ids"` // sorted; hex for ObjectIDs, raw for strings
 	CreatedAt string   `json:"created_at"`
 }
-
 
 // saveIDCache serializes cache to path as indented JSON, setting CreatedAt to
 // the current UTC time before writing. The file is created or overwritten.
@@ -502,17 +501,43 @@ func eligibleStatuses(ignoreError bool) bson.A {
 	return bson.A{"complete", "canceled", "error"}
 }
 
+// statusDateField returns the metrics field that determines a job's age for a
+// given status. "complete" and "canceled" jobs finish normally and get
+// metrics.end_time. "error" jobs never reach that terminal step, so
+// metrics.end_time is never set for them — their age is measured from
+// metrics.start_time instead. Both fields are stored as milliseconds since
+// epoch (not a BSON date).
+func statusDateField(status string) string {
+	if status == "error" {
+		return "metrics.start_time"
+	}
+	return "metrics.end_time"
+}
+
+// statusEligibilityFilter builds the Phase 1 parent-job filter for a single
+// status, using whichever date field applies to that status.
+func statusEligibilityFilter(status string, cutoffMS int64) bson.D {
+	return bson.D{
+		{Key: "$and", Value: bson.A{
+			bson.D{{Key: statusDateField(status), Value: bson.D{{Key: "$lt", Value: cutoffMS}}}},
+			bson.D{{Key: "status", Value: status}},
+			bson.D{{Key: "ancestors", Value: bson.D{{Key: "$size", Value: 1}}}},
+		}},
+	}
+}
+
 // discoverJobIDs finds all job IDs eligible for deletion using a two-phase
 // query that matches the logic in the reference Node.js delete-jobs script.
 //
 // Phase 1: Find parent jobs whose status is in statuses and are older than the
 // cutoff. Parent jobs are identified by having exactly one ancestor — themselves.
+// Each status is queried separately because "error" jobs are aged off
+// metrics.start_time while "complete"/"canceled" jobs use metrics.end_time
+// (see statusDateField).
 //
 // Phase 2: Expand to all jobs (parents + children) whose first ancestor matches
 // any of the parent IDs found in phase 1. This captures child jobs that may
 // not individually meet the age/status criteria but belong to an eligible parent.
-//
-// metrics.end_time is stored as milliseconds since epoch (not a BSON date).
 //
 // IDs are returned as []interface{} where each element is either a
 // primitive.ObjectID or a string, matching the actual BSON type stored in
@@ -527,18 +552,23 @@ func discoverJobIDs(ctx context.Context, db DatabaseAPI, cutoffMS int64, statuse
 
 	jobs := db.Collection(collJobs)
 
-	// Phase 1: find eligible parent jobs older than the cutoff.
+	// Phase 1: find eligible parent jobs older than the cutoff, one status at a
+	// time since each status ages off a different metrics field.
 	log.Printf("Phase 1: Finding parent jobs with status %v older than the cutoff...", statuses)
 	t0 := time.Now()
-	parentIDs, err := findIDs(ctx, jobs, bson.D{
-		{Key: "$and", Value: bson.A{
-			bson.D{{Key: "metrics.end_time", Value: bson.D{{Key: "$lt", Value: cutoffMS}}}},
-			bson.D{{Key: "status", Value: bson.D{{Key: "$in", Value: statuses}}}},
-			bson.D{{Key: "ancestors", Value: bson.D{{Key: "$size", Value: 1}}}},
-		}},
-	})
-	if err != nil {
-		return nil, fmt.Errorf("find parent jobs: %w", err)
+	var parentIDs []interface{}
+	for _, s := range statuses {
+		status, ok := s.(string)
+		if !ok {
+			return nil, fmt.Errorf("unexpected status type %T in eligible statuses", s)
+		}
+		statusIDs, err := findIDs(ctx, jobs, statusEligibilityFilter(status, cutoffMS))
+		if err != nil {
+			return nil, fmt.Errorf("find parent jobs (status=%s): %w", status, err)
+		}
+		log.Printf("Phase 1: %d parent jobs found with status %q (aged off %s)",
+			len(statusIDs), status, statusDateField(status))
+		parentIDs = append(parentIDs, statusIDs...)
 	}
 	log.Printf("Phase 1: %d parent jobs found in %s", len(parentIDs), time.Since(t0).Round(time.Millisecond))
 	if len(parentIDs) == 0 {
@@ -616,25 +646,30 @@ func discoverJobIDs(ctx context.Context, db DatabaseAPI, cutoffMS int64, statuse
 // the ancestors array holds hex strings or native BSON ObjectIDs. It re-runs
 // the Phase 1 filter with a limit of 1 rather than fetching by _id, which
 // avoids a "no documents" error when secondaryPreferred routes the two queries
-// to different replica set members.
+// to different replica set members. It tries each status in turn (using that
+// status's own date field, see statusDateField) and returns the first match —
+// Phase 1 already guarantees at least one status has eligible parents.
 func ancestorsStoredAsStrings(ctx context.Context, coll CollectionAPI, cutoffMS int64, statuses bson.A) (bool, error) {
-	var doc bson.M
-	err := coll.FindOne(ctx, bson.D{
-		{Key: "$and", Value: bson.A{
-			bson.D{{Key: "metrics.end_time", Value: bson.D{{Key: "$lt", Value: cutoffMS}}}},
-			bson.D{{Key: "status", Value: bson.D{{Key: "$in", Value: statuses}}}},
-			bson.D{{Key: "ancestors", Value: bson.D{{Key: "$size", Value: 1}}}},
-		}},
-	}).Decode(&doc)
-	if err != nil {
-		return false, err
+	var lastErr error
+	for _, s := range statuses {
+		status, ok := s.(string)
+		if !ok {
+			continue
+		}
+		var doc bson.M
+		err := coll.FindOne(ctx, statusEligibilityFilter(status, cutoffMS)).Decode(&doc)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		ancestors, ok := doc["ancestors"].(bson.A)
+		if !ok || len(ancestors) == 0 {
+			return false, nil
+		}
+		_, isString := ancestors[0].(string)
+		return isString, nil
 	}
-	ancestors, ok := doc["ancestors"].(bson.A)
-	if !ok || len(ancestors) == 0 {
-		return false, nil
-	}
-	_, isString := ancestors[0].(string)
-	return isString, nil
+	return false, lastErr
 }
 
 // findIDs runs a find query and returns only the _id values of matching
@@ -848,6 +883,14 @@ func findFileIDs(ctx context.Context, db DatabaseAPI, jobIDs []interface{}, batc
 // (by metadata.job). Because files_id in job_data.chunks references the _id
 // of the job_data.files document — not the job ID — this requires a two-phase
 // approach: resolve file document IDs first, then delete chunks by those IDs.
+//
+// Both deletes are skipped entirely when fileIDs is empty: a zero-length
+// result from findFileIDs means no job_data.files document references any of
+// the given job IDs, so a batched DeleteMany against either collection is
+// guaranteed to match and delete 0 documents. Running it anyway would just
+// waste a round trip per batch (this was found from a production log showing
+// 39 job_data.files batches, each reporting "deleted 0", after discovery had
+// already reported 0 job_data.files documents found).
 func deleteGridFS(
 	ctx context.Context,
 	db DatabaseAPI,
@@ -861,6 +904,10 @@ func deleteGridFS(
 	}
 	log.Printf("  Found %d job_data.files documents", len(fileIDs))
 
+	// No job_data.files documents reference these job IDs, so neither
+	// job_data.chunks (filtered by files_id) nor job_data.files itself
+	// (filtered by the same metadata.job condition that produced fileIDs)
+	// can contain any matching documents. Skip both deletes entirely.
 	if len(fileIDs) > 0 {
 		if ctx.Err() != nil {
 			return 0, 0, ctx.Err()
@@ -872,18 +919,18 @@ func deleteGridFS(
 			return chunksDeleted, 0, fmt.Errorf("delete %s: %w", collJobChunks, err)
 		}
 		log.Printf("  %s: deleted %d documents  (%s)", collJobChunks, chunksDeleted, time.Since(t0).Round(time.Second))
-	}
 
-	if ctx.Err() != nil {
-		return chunksDeleted, 0, ctx.Err()
+		if ctx.Err() != nil {
+			return chunksDeleted, 0, ctx.Err()
+		}
+		log.Printf("Deleting from %s...", collJobFiles)
+		t0 = time.Now()
+		filesDeleted, err = batchDelete(ctx, db.Collection(collJobFiles), "metadata.job", jobIDs, cfg)
+		if err != nil {
+			return chunksDeleted, filesDeleted, fmt.Errorf("delete %s: %w", collJobFiles, err)
+		}
+		log.Printf("  %s: deleted %d documents  (%s)", collJobFiles, filesDeleted, time.Since(t0).Round(time.Second))
 	}
-	log.Printf("Deleting from %s...", collJobFiles)
-	t0 := time.Now()
-	filesDeleted, err = batchDelete(ctx, db.Collection(collJobFiles), "metadata.job", jobIDs, cfg)
-	if err != nil {
-		return chunksDeleted, filesDeleted, fmt.Errorf("delete %s: %w", collJobFiles, err)
-	}
-	log.Printf("  %s: deleted %d documents  (%s)", collJobFiles, filesDeleted, time.Since(t0).Round(time.Second))
 
 	return chunksDeleted, filesDeleted, nil
 }
