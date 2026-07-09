@@ -884,6 +884,14 @@ func findFileIDs(ctx context.Context, db DatabaseAPI, jobIDs []interface{}, batc
 // (by metadata.job). Because files_id in job_data.chunks references the _id
 // of the job_data.files document — not the job ID — this requires a two-phase
 // approach: resolve file document IDs first, then delete chunks by those IDs.
+//
+// Both deletes are skipped entirely when fileIDs is empty: a zero-length
+// result from findFileIDs means no job_data.files document references any of
+// the given job IDs, so a batched DeleteMany against either collection is
+// guaranteed to match and delete 0 documents. Running it anyway would just
+// waste a round trip per batch (this was found from a production log showing
+// 39 job_data.files batches, each reporting "deleted 0", after discovery had
+// already reported 0 job_data.files documents found).
 func deleteGridFS(
 	ctx context.Context,
 	db DatabaseAPI,
@@ -897,6 +905,10 @@ func deleteGridFS(
 	}
 	log.Printf("  Found %d job_data.files documents", len(fileIDs))
 
+	// No job_data.files documents reference these job IDs, so neither
+	// job_data.chunks (filtered by files_id) nor job_data.files itself
+	// (filtered by the same metadata.job condition that produced fileIDs)
+	// can contain any matching documents. Skip both deletes entirely.
 	if len(fileIDs) > 0 {
 		if ctx.Err() != nil {
 			return 0, 0, ctx.Err()
@@ -908,18 +920,18 @@ func deleteGridFS(
 			return chunksDeleted, 0, fmt.Errorf("delete %s: %w", collJobChunks, err)
 		}
 		log.Printf("  %s: deleted %d documents  (%s)", collJobChunks, chunksDeleted, time.Since(t0).Round(time.Second))
-	}
 
-	if ctx.Err() != nil {
-		return chunksDeleted, 0, ctx.Err()
+		if ctx.Err() != nil {
+			return chunksDeleted, 0, ctx.Err()
+		}
+		log.Printf("Deleting from %s...", collJobFiles)
+		t0 = time.Now()
+		filesDeleted, err = batchDelete(ctx, db.Collection(collJobFiles), "metadata.job", jobIDs, cfg)
+		if err != nil {
+			return chunksDeleted, filesDeleted, fmt.Errorf("delete %s: %w", collJobFiles, err)
+		}
+		log.Printf("  %s: deleted %d documents  (%s)", collJobFiles, filesDeleted, time.Since(t0).Round(time.Second))
 	}
-	log.Printf("Deleting from %s...", collJobFiles)
-	t0 := time.Now()
-	filesDeleted, err = batchDelete(ctx, db.Collection(collJobFiles), "metadata.job", jobIDs, cfg)
-	if err != nil {
-		return chunksDeleted, filesDeleted, fmt.Errorf("delete %s: %w", collJobFiles, err)
-	}
-	log.Printf("  %s: deleted %d documents  (%s)", collJobFiles, filesDeleted, time.Since(t0).Round(time.Second))
 
 	return chunksDeleted, filesDeleted, nil
 }

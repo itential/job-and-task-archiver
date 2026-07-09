@@ -68,7 +68,8 @@ Deletions happen in this order so that job IDs remain queryable until the very e
 | 5 | `jobs` | `_id` in job IDs |
 
 `job_data.chunks` requires a two-phase delete: `files_id` references the `_id` of the parent `job_data.files`
-document, not the job ID. File document IDs are resolved first, then chunks are deleted by those IDs.
+document, not the job ID. File document IDs are resolved first, then chunks are deleted by those IDs. If no
+`job_data.files` documents are found for the job ID set (no GridFS attachments), steps 3 and 4 are skipped entirely.
 
 ## Build
 

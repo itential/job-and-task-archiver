@@ -52,6 +52,10 @@ Five collections, in safe deletion order (jobs last):
 
 This is implemented in `deleteGridFS()` and `findFileIDs()`. The count summary uses the same two-phase approach.
 
+Both steps 2 and 3 are skipped entirely when step 1 finds zero file IDs — if no `job_data.files` documents
+reference the given job IDs, there is nothing for either delete to match, so `deleteGridFS()` short-circuits rather
+than running batched `DeleteMany` calls that are guaranteed to delete 0 documents.
+
 **Field types confirmed from a production deployment**:
 
 - `jobs._id` — BSON string (hex, e.g. `"17ea0fe657ac4da1b5fec4b1"`)

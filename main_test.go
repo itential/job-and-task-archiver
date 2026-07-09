@@ -557,6 +557,96 @@ func TestBatchDelete_Empty(t *testing.T) {
 }
 
 // ----------------------------------------------------------------------------
+// deleteGridFS
+// ----------------------------------------------------------------------------
+
+// TestDeleteGridFS_NoFilesSkipsChunksAndFilesDelete is a regression test: when
+// no job_data.files documents match the given job IDs, neither
+// job_data.chunks nor job_data.files should have DeleteMany called against
+// them — there is nothing to delete, and running the query anyway wastes a
+// round trip per batch for no effect.
+func TestDeleteGridFS_NoFilesSkipsChunksAndFilesDelete(t *testing.T) {
+	filesDeleteCalled := false
+	chunksDeleteCalled := false
+
+	filesColl := &mockCollection{
+		name: collJobFiles,
+		findFn: func(_ context.Context, _ interface{}, _ ...*options.FindOptions) (CursorAPI, error) {
+			return newMockCursor(nil), nil
+		},
+		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
+			filesDeleteCalled = true
+			return &mongo.DeleteResult{}, nil
+		},
+	}
+	chunksColl := &mockCollection{
+		name: collJobChunks,
+		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
+			chunksDeleteCalled = true
+			return &mongo.DeleteResult{}, nil
+		},
+	}
+	db := &mockDatabase{collections: map[string]CollectionAPI{
+		collJobFiles:  filesColl,
+		collJobChunks: chunksColl,
+	}}
+
+	cfg := &Config{BatchSize: 1000, BatchDelayMS: 0}
+	chunksDeleted, filesDeleted, err := deleteGridFS(context.Background(), db, []interface{}{"job1"}, cfg)
+	if err != nil {
+		t.Fatalf("deleteGridFS: %v", err)
+	}
+	if filesDeleteCalled {
+		t.Error("expected job_data.files DeleteMany to be skipped when no file IDs found")
+	}
+	if chunksDeleteCalled {
+		t.Error("expected job_data.chunks DeleteMany to be skipped when no file IDs found")
+	}
+	if chunksDeleted != 0 || filesDeleted != 0 {
+		t.Errorf("expected 0 deleted for both collections, got chunks=%d files=%d", chunksDeleted, filesDeleted)
+	}
+}
+
+// TestDeleteGridFS_WithFilesDeletesBoth confirms the existing behavior is
+// unchanged when job_data.files documents do exist: both chunks and files
+// are still deleted.
+func TestDeleteGridFS_WithFilesDeletesBoth(t *testing.T) {
+	fileOID := primitive.NewObjectID()
+
+	filesColl := &mockCollection{
+		name: collJobFiles,
+		findFn: func(_ context.Context, _ interface{}, _ ...*options.FindOptions) (CursorAPI, error) {
+			return newMockCursor([]bson.M{{"_id": fileOID}}), nil
+		},
+		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
+			return &mongo.DeleteResult{DeletedCount: 1}, nil
+		},
+	}
+	chunksColl := &mockCollection{
+		name: collJobChunks,
+		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
+			return &mongo.DeleteResult{DeletedCount: 3}, nil
+		},
+	}
+	db := &mockDatabase{collections: map[string]CollectionAPI{
+		collJobFiles:  filesColl,
+		collJobChunks: chunksColl,
+	}}
+
+	cfg := &Config{BatchSize: 1000, BatchDelayMS: 0}
+	chunksDeleted, filesDeleted, err := deleteGridFS(context.Background(), db, []interface{}{"job1"}, cfg)
+	if err != nil {
+		t.Fatalf("deleteGridFS: %v", err)
+	}
+	if chunksDeleted != 3 {
+		t.Errorf("expected 3 chunks deleted, got %d", chunksDeleted)
+	}
+	if filesDeleted != 1 {
+		t.Errorf("expected 1 file deleted, got %d", filesDeleted)
+	}
+}
+
+// ----------------------------------------------------------------------------
 // summarizeAffectedDocuments
 // ----------------------------------------------------------------------------
 
