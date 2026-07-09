@@ -540,7 +540,7 @@ func TestBatchDelete_MultipleBatches(t *testing.T) {
 
 func TestBatchDelete_Empty(t *testing.T) {
 	coll := &mockCollection{
-		name:         collTasks,
+		name: collTasks,
 		deleteManyFn: func(_ context.Context, _ interface{}) (*mongo.DeleteResult, error) {
 			return &mongo.DeleteResult{DeletedCount: 0}, nil
 		},

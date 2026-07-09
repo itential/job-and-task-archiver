@@ -72,8 +72,8 @@ type Config struct {
 	URI            string
 	Database       string
 	CutoffDays     int
-	IDsFile   string // cache of discovered job IDs shared across phases
-	OutputDir string // directory where per-collection JSONL files are written
+	IDsFile        string // cache of discovered job IDs shared across phases
+	OutputDir      string // directory where per-collection JSONL files are written
 	BatchSize      int
 	BatchDelayMS   int
 	Export         bool
@@ -92,12 +92,12 @@ type Config struct {
 
 	// Logging — output is tee'd to stdout and to a rotating file under LogDir.
 	// Setting LogDir to "" disables file logging (stdout only).
-	LogDir         string
-	LogFile        string
-	LogMaxSizeMB   int
-	LogMaxBackups  int
-	LogMaxAgeDays  int
-	LogCompress    bool
+	LogDir        string
+	LogFile       string
+	LogMaxSizeMB  int
+	LogMaxBackups int
+	LogMaxAgeDays int
+	LogCompress   bool
 }
 
 // initConfig loads configuration in priority order:
@@ -205,7 +205,7 @@ func initConfig() (*Config, error) {
 		Database:       v.GetString("database"),
 		CutoffDays:     v.GetInt("cutoff-days"),
 		IDsFile:        v.GetString("ids-file"),
-		OutputDir: v.GetString("output-dir"),
+		OutputDir:      v.GetString("output-dir"),
 		BatchSize:      v.GetInt("batch-size"),
 		BatchDelayMS:   v.GetInt("batch-delay-ms"),
 		Export:         v.GetBool("export"),
@@ -304,11 +304,10 @@ func idType(id interface{}) string {
 // load so that $in filters are sent with the matching BSON type.
 type IDCache struct {
 	CutoffMS  int64    `json:"cutoff_ms"`
-	IDType    string   `json:"id_type"`  // "objectid" or "string"
-	JobIDs    []string `json:"job_ids"`  // sorted; hex for ObjectIDs, raw for strings
+	IDType    string   `json:"id_type"` // "objectid" or "string"
+	JobIDs    []string `json:"job_ids"` // sorted; hex for ObjectIDs, raw for strings
 	CreatedAt string   `json:"created_at"`
 }
-
 
 // saveIDCache serializes cache to path as indented JSON, setting CreatedAt to
 // the current UTC time before writing. The file is created or overwritten.

@@ -77,7 +77,7 @@ field:
 jobs.find({
   $and: [
     { "metrics.end_time": { $lt: cutoffMS } },   // milliseconds, not BSON date
-    { "status": "complete" },                     // or "canceled"
+    { "status": { $in: ["complete", "canceled", "error"] } },  // "error" dropped if --ignore-error
     { "ancestors": { $size: 1 } }                 // parent jobs only
   ]
 })
@@ -108,6 +108,11 @@ one parent guarantees one status will succeed.
 
 **Phase 2** — expand to parents + all children (unaffected by the per-status date field, since it matches purely on
 `ancestors.0`):
+`eligibleStatuses(cfg.IgnoreError)` builds the status list: `["complete", "canceled", "error"]` by default, or
+`["complete", "canceled"]` when `--ignore-error` is set. Both `discoverJobIDs()` and `ancestorsStoredAsStrings()`
+take this list as a parameter rather than hardcoding it.
+
+**Phase 2** — expand to parents + all children:
 
 ```javascript
 jobs.find({ "ancestors.0": { $in: parentIDs } })
