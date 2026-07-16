@@ -3,6 +3,10 @@
 Exports and optionally deletes completed, canceled, and errored Itential Platform job documents — along with all
 associated tasks and job data — from a MongoDB database. Designed to run safely against production databases with minimal impact.
 
+A companion tool, [`itential-orphan-archiver`](orphan-archiver/README.md), finds and optionally exports/deletes
+orphaned `tasks`, `job_data`, `job_data.files`, and `job_data.chunks` documents whose parent job no longer exists —
+records this tool would never touch, since it always walks forward from a live job's own ID.
+
 ## Contents
 
 - [Features](#features)
@@ -24,6 +28,7 @@ associated tasks and job data — from a MongoDB database. Designed to run safel
   - [`compact` command (single-node, or quick fix)](#compact-command-single-node-or-quick-fix)
 - [Example: export and import script](#example-export-and-import-script)
 - [Output format](#output-format)
+- [Companion tool: itential-orphan-archiver](orphan-archiver/README.md)
 
 ## Features
 
