@@ -151,6 +151,11 @@ The `job_data` collection should have an index on `job_id` — verify with `db.j
 
 Single `main.go` file. No subcommands, no subpackages. Keep it that way unless complexity demands otherwise.
 
+This convention applies to this tool specifically, at the repo root. `orphan-archiver/` is a separate companion
+tool with its own single-file `main.go` in its own directory — see
+[Companion tool: orphan-archiver](#companion-tool-orphan-archiver) below for why it's a standalone binary rather
+than a mode of this one.
+
 ### Data flow
 
 ```text
@@ -276,8 +281,12 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 - **`job_data.chunks` requires two-phase delete**: `files_id` is the `_id` of the `job_data.files` document, not the
   job ID. `findFileIDs()` resolves file IDs first; `deleteGridFS()` uses them. Do not simplify to a direct job ID
   filter — it will silently delete nothing.
-- **`metrics.end_time` / `metrics.start_time` are milliseconds**: not a BSON date, not seconds. The filter passes raw `int64` milliseconds to MongoDB.
-- **`error` jobs have no `metrics.end_time`**: they never reach normal completion, so that field is never populated for them. Discovery ages `error` jobs off `metrics.start_time` instead (see `statusDateField()`); `complete`/`canceled` still use `metrics.end_time`. Filtering `error` jobs on `end_time` was a real production bug — it silently matched zero of them regardless of age.
+- **`metrics.end_time` / `metrics.start_time` are milliseconds**: not a BSON date, not seconds. The filter passes
+  raw `int64` milliseconds to MongoDB.
+- **`error` jobs have no `metrics.end_time`**: they never reach normal completion, so that field is never populated
+  for them. Discovery ages `error` jobs off `metrics.start_time` instead (see `statusDateField()`);
+  `complete`/`canceled` still use `metrics.end_time`. Filtering `error` jobs on `end_time` was a real production
+  bug — it silently matched zero of them regardless of age.
 - **Export files are overwritten on every run**: `O_TRUNC` is intentional. There is no resume — re-running always produces a clean export.
 - **Cutoff slides daily, not hourly**: the cutoff is fixed at midnight UTC of the current day. Running the tool multiple times on the same day with the same `--cutoff-days` produces the same result set.
 - **`ancestors.0` COLLSCAN without index**: Phase 2 is slow without an index on `ancestors.0`. See recommended indexes above.
@@ -286,8 +295,11 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 
 ## What NOT to Change Without Care
 
-- **Deletion order**: tasks/data before jobs. If jobs are deleted first and the run is interrupted, their IDs are gone and phase 3 cannot resume.
-- **Per-status date field in Phase 1** (`statusDateField()`): `error` uses `metrics.start_time`, `complete`/`canceled` use `metrics.end_time`. Collapsing this back to a single field for all statuses reintroduces the silent-exclusion bug for `error` jobs.
+- **Deletion order**: tasks/data before jobs. If jobs are deleted first and the run is interrupted, their IDs are
+  gone and phase 3 cannot resume.
+- **Per-status date field in Phase 1** (`statusDateField()`): `error` uses `metrics.start_time`,
+  `complete`/`canceled` use `metrics.end_time`. Collapsing this back to a single field for all statuses reintroduces
+  the silent-exclusion bug for `error` jobs.
 - **Phase 2 discovery query** (`ancestors.0`): finds parents AND all children in one pass. Changing this filter will miss child jobs.
 - **GridFS deletion order**: chunks before files (both before jobs). `deleteGridFS()` handles this pair. Do not reorder.
 - **Cutoff calculation**: pinned to midnight UTC via `AddDate`. Do not revert to duration arithmetic — it produces inconsistent results depending on time of day.
@@ -295,6 +307,40 @@ Unit tests live in `main_test.go` and use mock implementations of the MongoDB in
 - **MongoDB interface signatures**: `CollectionAPI.DeleteMany` and `CountDocuments` intentionally omit variadic
   options — they only expose what the application actually uses. Expanding them requires updating both the interface
   and all mock implementations in tests.
+
+## Companion tool: orphan-archiver
+
+`orphan-archiver/` is a separate Go binary (`itential-orphan-archiver`) living in its own subdirectory of this
+module, sharing the root `go.mod` but built as an independent `package main`. It finds and optionally
+exports/deletes **orphaned** documents in `tasks`, `job_data`, `job_data.files`, and `job_data.chunks` — records
+whose parent job no longer exists in `jobs`. See `orphan-archiver/README.md` for full usage.
+
+**Why a separate binary instead of a mode on this tool**: this tool's safety model revolves entirely around
+walking forward from a live job ID set (found via cutoff + status, deleted in an order that keeps `jobs` as the
+last, most-recoverable step). Orphan cleanup is the opposite shape — there is no live job to anchor the query, no
+cutoff, no status, and no "jobs deleted last" ordering, since `jobs` is never written to at all. Keeping the two
+tools' delete logic fully independent, rather than threading an "orphan mode" through this tool's assumptions,
+avoids one tool's edge cases leaking into the other's — both are safety-critical, delete-capable tools operating
+on production data.
+
+**Deliberate duplication**: `orphan-archiver/main.go` duplicates this tool's `Config`/flag/env/YAML loading,
+logging setup, TLS/Mongo client construction, `batchDelete`, and JSONL export writer almost verbatim rather than
+sharing a package. This was a deliberate choice (not an oversight) so the two tools can evolve independently
+without one's change accidentally affecting the other's delete path. If you fix a bug in one tool's copy of this
+shared-shape code (e.g. `batchDelete`, `exportCollection`), check whether the same bug exists in the other tool's
+copy — it won't be caught by the other tool's test suite.
+
+**Detection approach**: server-side `$lookup` aggregation per collection (not a client-side ID-set diff), chosen so
+the full set of live job IDs never has to be held in application memory — this matters because, unlike this tool's
+discovery (which narrows by cutoff + status first), orphan detection has no narrowing filter and the `jobs`
+collection could be very large. `job_data.chunks` uses a nested `$lookup` (`let`/`pipeline`) into `job_data.files`
+rather than the direct `localField`/`foreignField` join used for the other three collections, because
+`files_id` references `job_data.files._id`, not a job ID — same referential-integrity distinction that drives the
+two-phase GridFS delete in this tool (see `deleteGridFS()` above).
+
+**No cutoff/age filter**: every orphan found is immediately eligible. There's no "still in progress" state to
+protect the way this tool protects recent `complete`/`canceled`/`error` jobs, since the parent job is already gone
+by definition.
 
 ## Project Rules
 
